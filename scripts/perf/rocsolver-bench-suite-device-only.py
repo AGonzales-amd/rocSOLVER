@@ -157,7 +157,7 @@ def geqrf_suite(*, precision, device):
                        range(1024, 2048, 128),
                        range(2048, 4096, 256),
                        range(4096, 8193, 512)):
-            yield (fn, f'-f {fn} -r {precision} -m {m * 100} -n {m} --iters 10 --perf 1 --device {device}')
+            yield (fn, f'-f {fn} -r {precision} -m {m} --iters 10 --perf 1 --device {device}')
 
 def geqrf_strided_batched_suite(*, precision, device):
     for fn in ['geqrf_strided_batched']:
