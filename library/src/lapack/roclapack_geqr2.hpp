@@ -49,13 +49,15 @@ void rocsolver_geqr2_getMemorySize(const I m,
                                    size_t* size_tmptr_norms,
                                    size_t* size_diag)
 {
+    // initialize
+    *size_scalars = 0;
+    *size_work_workArr = 0;
+    *size_tmptr_norms = 0;
+    *size_diag = 0;
+
     // if quick return no workspace needed
     if(m == 0 || n == 0 || batch_count == 0)
     {
-        *size_scalars = 0;
-        *size_work_workArr = 0;
-        *size_tmptr_norms = 0;
-        *size_diag = 0;
         return;
     }
 
