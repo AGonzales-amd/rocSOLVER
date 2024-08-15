@@ -82,7 +82,7 @@ rocblas_status
         init_scalars(handle, (T*)scalars);
 
     // execution
-    return rocsolver_geqr2_template<T>(handle, m, n, A, shiftA, lda, strideA, ipiv, stridep,
+    return rocsolver_geqr2_template<false, false, T>(handle, m, n, A, shiftA, lda, strideA, ipiv, stridep,
                                        batch_count, (T*)scalars, work_workArr, (T*)Abyx_norms,
                                        (T*)diag);
 }

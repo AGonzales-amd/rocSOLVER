@@ -33,7 +33,7 @@
 #pragma once
 
 #include "auxiliary/rocauxiliary_lacgv.hpp"
-#include "auxiliary/rocauxiliary_larf.hpp"
+#include "auxiliary/rocauxiliary_larfb.hpp"
 #include "auxiliary/rocauxiliary_larfg.hpp"
 #include "rocblas.hpp"
 #include "rocsolver/rocsolver.h"
@@ -46,7 +46,7 @@ void rocsolver_geqr2_getMemorySize(const I m,
                                    const I batch_count,
                                    size_t* size_scalars,
                                    size_t* size_work_workArr,
-                                   size_t* size_Abyx_norms,
+                                   size_t* size_tmptr_norms,
                                    size_t* size_diag)
 {
     // if quick return no workspace needed
@@ -54,19 +54,20 @@ void rocsolver_geqr2_getMemorySize(const I m,
     {
         *size_scalars = 0;
         *size_work_workArr = 0;
-        *size_Abyx_norms = 0;
+        *size_tmptr_norms = 0;
         *size_diag = 0;
         return;
     }
 
-    // size of Abyx_norms is maximum of what is needed by larf and larfg
+    // size of tmptr_norms is maximum of what is needed by larfb and larfg
     // size_work_workArr is maximum of re-usable work space and array of pointers to workspace
     size_t s1, s2, w1, w2;
-    rocsolver_larf_getMemorySize<BATCHED, T>(rocblas_side_left, m, n, batch_count, size_scalars,
-                                             &s1, &w1);
+    // requirements for calling LARFB
+    rocsolver_larfb_getMemorySize<BATCHED, T>(rocblas_side_left, m, n - 1, 1, batch_count,
+                                              &s1, &w1);
     rocsolver_larfg_getMemorySize<T>(m, batch_count, &w2, &s2);
     *size_work_workArr = std::max(w1, w2);
-    *size_Abyx_norms = std::max(s1, s2);
+    *size_tmptr_norms = std::max(s1, s2);
 
     // size of array to store temporary diagonal values
     *size_diag = sizeof(T) * batch_count;
@@ -101,7 +102,7 @@ rocblas_status rocsolver_geqr2_geqrf_argCheck(rocblas_handle handle,
     return rocblas_status_continue;
 }
 
-template <typename T, typename I, typename U, bool COMPLEX = rocblas_is_complex<T>>
+template <bool BATCHED, bool STRIDED, typename T, typename I, typename U, bool COMPLEX = rocblas_is_complex<T>>
 rocblas_status rocsolver_geqr2_template(rocblas_handle handle,
                                         const I m,
                                         const I n,
@@ -114,7 +115,7 @@ rocblas_status rocsolver_geqr2_template(rocblas_handle handle,
                                         const I batch_count,
                                         T* scalars,
                                         void* work_workArr,
-                                        T* Abyx_norms,
+                                        T* tmptr_norms,
                                         T* diag)
 {
     ROCSOLVER_ENTER("geqr2", "m:", m, "n:", n, "shiftA:", shiftA, "lda:", lda, "bc:", batch_count);
@@ -133,33 +134,16 @@ rocblas_status rocsolver_geqr2_template(rocblas_handle handle,
         // generate Householder reflector to work on column j
         rocsolver_larfg_template(handle, m - j, A, shiftA + idx2D(j, j, lda), A,
                                  shiftA + idx2D(std::min(j + 1, m - 1), j, lda), (I)1, strideA,
-                                 (ipiv + j), strideP, batch_count, (T*)work_workArr, Abyx_norms);
+                                 (ipiv + j), strideP, batch_count, (T*)work_workArr, tmptr_norms);
 
         // Apply Householder reflector to the rest of matrix from the left
         if(j < n - 1)
         {
-            // insert one in A(j,j) tobuild/apply the householder matrix
-            ROCSOLVER_LAUNCH_KERNEL((set_diag<T, I>), dim3(batch_count, 1, 1), dim3(1, 1, 1), 0,
-                                    stream, diag, 0, 1, A, shiftA + idx2D(j, j, lda), lda, strideA,
-                                    (I)1, true);
-
-            // conjugate tau
-            if(COMPLEX)
-                rocsolver_lacgv_template<T>(handle, (I)1, ipiv, j, (I)1, strideP, batch_count);
-
-            rocsolver_larf_template(handle, rocblas_side_left, m - j, n - j - 1, A,
-                                    shiftA + idx2D(j, j, lda), (I)1, strideA, (ipiv + j), strideP,
-                                    A, shiftA + idx2D(j, j + 1, lda), lda, strideA, batch_count,
-                                    scalars, Abyx_norms, (T**)work_workArr);
-
-            // restore original value of A(j,j)
-            ROCSOLVER_LAUNCH_KERNEL((restore_diag<T, I>), dim3(batch_count, 1, 1), dim3(1, 1, 1), 0,
-                                    stream, diag, 0, 1, A, shiftA + idx2D(j, j, lda), lda, strideA,
-                                    (I)1);
-
-            // restore tau
-            if(COMPLEX)
-                rocsolver_lacgv_template<T>(handle, (I)1, ipiv, j, (I)1, strideP, batch_count);
+            rocsolver_larfb_template<BATCHED, STRIDED, T>(
+                handle, rocblas_side_left, rocblas_operation_conjugate_transpose,
+                rocblas_forward_direction, rocblas_column_wise, m - j, n - j - 1, 1, A,
+                shiftA + idx2D(j, j, lda), lda, strideA, (ipiv + j), 0, 1, strideP, A,
+                shiftA + idx2D(j, j + 1, lda), lda, strideA, batch_count, tmptr_norms, (T**)work_workArr);
         }
     }
 

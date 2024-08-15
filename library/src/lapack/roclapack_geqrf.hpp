@@ -127,7 +127,7 @@ rocblas_status rocsolver_geqrf_template(rocblas_handle handle,
     // algorithm
     if(m <= GEQxF_GEQx2_SWITCHSIZE || n <= GEQxF_GEQx2_SWITCHSIZE)
     {
-        rocsolver_geqr2_template<T>(handle, m, n, A, shiftA, lda, strideA, ipiv, strideP, batch_count,
+        rocsolver_geqr2_template<BATCHED, STRIDED, T>(handle, m, n, A, shiftA, lda, strideA, ipiv, strideP, batch_count,
                                     scalars, work_workArr, Abyx_norms_trfact, diag_tmptr);
         return rocblas_status_success;
     }
@@ -143,7 +143,7 @@ rocblas_status rocsolver_geqrf_template(rocblas_handle handle,
     {
         // Factor diagonal and subdiagonal blocks
         jb = std::min(dim - j, nb); // number of columns in the block
-        rocsolver_geqr2_template<T>(handle, m - j, jb, A, shiftA + idx2D(j, j, lda), lda, strideA,
+        rocsolver_geqr2_template<BATCHED, STRIDED, T>(handle, m - j, jb, A, shiftA + idx2D(j, j, lda), lda, strideA,
                                     (ipiv + j), strideP, batch_count, scalars, work_workArr,
                                     Abyx_norms_trfact, diag_tmptr);
 
@@ -168,7 +168,7 @@ rocblas_status rocsolver_geqrf_template(rocblas_handle handle,
 
     // factor last block
     if(j < dim)
-        rocsolver_geqr2_template<T>(handle, m - j, n - j, A, shiftA + idx2D(j, j, lda), lda,
+        rocsolver_geqr2_template<BATCHED, STRIDED, T>(handle, m - j, n - j, A, shiftA + idx2D(j, j, lda), lda,
                                     strideA, (ipiv + j), strideP, batch_count, scalars,
                                     work_workArr, Abyx_norms_trfact, diag_tmptr);
 
