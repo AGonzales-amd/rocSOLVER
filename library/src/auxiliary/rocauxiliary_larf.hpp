@@ -35,6 +35,7 @@
 #include "rocblas.hpp"
 #include "rocsolver/rocsolver.h"
 #include "rocsolver_run_specialized_kernels.hpp"
+#include "auxiliary/rocauxiliary_lacgv.hpp"
 
 ROCSOLVER_BEGIN_NAMESPACE
 
@@ -195,6 +196,144 @@ rocblas_status rocsolver_larf_template(rocblas_handle handle,
     {
         rocblasCall_ger<COMPLEX, T, I>(handle, m, n, alpha, stridep, Abyx, 0, 1, order, x, shiftx,
                                        incx, stridex, A, shiftA, lda, stridea, batch_count, workArr);
+    }
+
+    rocblas_set_pointer_mode(handle, old_mode);
+    return rocblas_status_success;
+}
+
+template <typename T, typename I, typename U, bool COMPLEX = rocblas_is_complex<T>>
+rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
+                                                 const rocblas_side side,
+                                                 const I m,
+                                                 const I n,
+                                                 U x,
+                                                 const rocblas_stride shiftx,
+                                                 const I incx,
+                                                 const rocblas_stride stridex,
+                                                 const T* alpha,
+                                                 const rocblas_stride stridep,
+                                                 U A,
+                                                 const rocblas_stride shiftA,
+                                                 const I lda,
+                                                 const rocblas_stride stridea,
+                                                 const I batch_count,
+                                                 T* scalars,
+                                                 T* Abyx,
+                                                 T** workArr)
+{
+    ROCSOLVER_ENTER("larf", "side:", side, "m:", m, "n:", n, "shiftX:", shiftx, "incx:", incx,
+                    "shiftA:", shiftA, "lda:", lda, "bc:", batch_count);
+
+    // quick return
+    if(n == 0 || m == 0 || !batch_count)
+        return rocblas_status_success;
+
+    hipStream_t stream;
+    rocblas_get_stream(handle, &stream);
+
+    // if n is small, use small-size kernel
+    bool ssker_left
+        = (side == rocblas_side_left && m <= LARF_SSKER_MAX_DIM && n <= LARF_SSKER_MIN_DIM);
+    bool ssker_right
+        = (side == rocblas_side_right && m <= LARF_SSKER_MIN_DIM && n <= LARF_SSKER_MAX_DIM);
+    if(ssker_left || ssker_right)
+    {
+        return larf_run_small(handle, side, m, n, x, shiftx, incx, stridex, alpha, stridep, A,
+                              shiftA, lda, stridea, batch_count);
+    }
+
+    // everything must be executed with scalars on the device
+    rocblas_pointer_mode old_mode;
+    rocblas_get_pointer_mode(handle, &old_mode);
+    rocblas_set_pointer_mode(handle, rocblas_pointer_mode_device);
+
+    // determine side and order of H
+    bool leftside = (side == rocblas_side_left);
+    I order = m;
+    rocblas_operation trans = rocblas_operation_none;
+    if(leftside)
+    {
+        trans = COMPLEX ? rocblas_operation_conjugate_transpose : rocblas_operation_transpose;
+        order = n;
+    }
+
+    // **** FOR NOW, IT DOES NOT DETERMINE "NON-ZERO" DIMENSIONS
+    //      OF A AND X, AS THIS WOULD REQUIRE SYNCHRONIZATION WITH GPU.
+    //      IT WILL WORK ON THE ENTIRE MATRIX/VECTOR REGARDLESS OF
+    //      ZERO ENTRIES ****
+
+    // std::cout << "larf unit diag" << std::endl;
+
+    // compute W = A1 * 1
+    // rocblas_int blocksx = (order - 1) / 32 + 1;
+    // rocblas_int blocksy = 1;
+    if(leftside)
+    {
+        // order = n;
+        // ldw = k;
+        // trap = (m > k);
+        // ROCSOLVER_LAUNCH_KERNEL(copymatA1, dim3(blocksx, blocksy, batch_count), dim3(32, 32), 0, stream,
+        //                     1, n, A, shiftA, lda, stridea, Abyx);
+        ROCSOLVER_LAUNCH_KERNEL((copy_mat<T, U>), dim3(1, (order - 1) / 32 + 1, batch_count),
+                                    dim3(32, 32), 0, stream, copymat_to_buffer, 1, n, A, shiftA,
+                                    lda, stridea, Abyx);
+    }
+    else
+    {
+        // order = k;
+        // ldw = m;
+        // trap = (n > k);
+        // ROCSOLVER_LAUNCH_KERNEL(copymatA1, dim3(blocksx, blocksy, batch_count), dim3(32, 32), 0, stream,
+        //                     m, 1, A, shiftA, lda, stridea, Abyx);
+        ROCSOLVER_LAUNCH_KERNEL((copy_mat<T, U>), dim3((order - 1) / 32 + 1, 1, batch_count),
+                                    dim3(32, 32), 0, stream, copymat_to_buffer, m, 1, A, shiftA,
+                                    lda, stridea, Abyx);
+    }
+    
+
+    // compute the matrix vector product
+    //      W = -A'*X = -A1' + -A2'*X2 
+    //  or  W = -A*X = -A1 + -A2*X2
+    if(leftside)
+    {
+        if(COMPLEX)
+            rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
+
+        rocblasCall_gemv<T>(handle, trans, m - 1, n, cast2constType<T>(scalars), 0, A, shiftA + idx2D(1, 0, lda), lda, stridea,
+                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars), 0, Abyx, 0, 1,
+                            order, batch_count, workArr);
+    }
+    else
+    {
+        rocblasCall_gemv<T>(handle, trans, m, n - 1, cast2constType<T>(scalars), 0, A, shiftA + idx2D(0, 1, lda), lda, stridea,
+                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars), 0, Abyx, 0, 1,
+                            order, batch_count, workArr);
+    }
+
+    // compute the rank-1 update  (A2 + tau*X2*W'  or A2 + tau*W*X2')
+    if(leftside)
+    {
+        rocblasCall_ger<COMPLEX, T, I>(handle, m - 1, n, alpha, stridep, x, (shiftx + incx), incx, stridex, Abyx,
+                                       0, 1, order, A, shiftA + idx2D(1, 0, lda), lda, stridea, batch_count, workArr);
+    }
+    else
+    {
+        rocblasCall_ger<COMPLEX, T, I>(handle, m, n - 1, alpha, stridep, Abyx, 0, 1, order, x, (shiftx + incx),
+                                       incx, stridex, A, shiftA + idx2D(0, 1, lda), lda, stridea, batch_count, workArr);
+    }
+
+    // compute A1 + tau*1*W' or A1 + tau*W*1
+    if(leftside)
+    {
+        if(COMPLEX)
+            rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
+
+        rocblasCall_axpy<T>(handle, order, alpha, stridep, Abyx, 0, 1, order, A, shiftA, lda, stridea, batch_count, workArr);
+    }
+    else
+    {
+        rocblasCall_axpy<T>(handle, order, alpha, stridep, Abyx, 0, 1, order, A, shiftA, 1, stridea, batch_count, workArr);
     }
 
     rocblas_set_pointer_mode(handle, old_mode);

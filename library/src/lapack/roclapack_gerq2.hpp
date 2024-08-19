@@ -140,24 +140,24 @@ rocblas_status rocsolver_gerq2_template(rocblas_handle handle,
                                  (ipiv + dim - j - 1), strideP, batch_count, (T*)work_workArr,
                                  Abyx_norms);
 
-        // insert one in A(j,j) tobuild/apply the householder matrix
-        ROCSOLVER_LAUNCH_KERNEL((set_diag<T, rocblas_int>), dim3(batch_count, 1, 1), dim3(1, 1, 1),
-                                0, stream, diag, 0, 1, A, shiftA + idx2D(m - j - 1, n - j - 1, lda),
-                                lda, strideA, 1, true);
+        // // insert one in A(j,j) tobuild/apply the householder matrix
+        // ROCSOLVER_LAUNCH_KERNEL((set_diag<T, rocblas_int>), dim3(batch_count, 1, 1), dim3(1, 1, 1),
+        //                         0, stream, diag, 0, 1, A, shiftA + idx2D(m - j - 1, n - j - 1, lda),
+        //                         lda, strideA, 1, true);
 
         // Apply Householder reflector to the rest of matrix from the right
         if(j < m - 1)
         {
-            rocsolver_larf_template(handle, rocblas_side_right, m - j - 1, n - j, A,
+            rocsolver_larf_unit_diag_template(handle, rocblas_side_right, m - j - 1, n - j, A,
                                     shiftA + idx2D(m - j - 1, 0, lda), lda, strideA,
                                     (ipiv + dim - j - 1), strideP, A, shiftA, lda, strideA,
                                     batch_count, scalars, Abyx_norms, (T**)work_workArr);
         }
 
-        // restore original value of A(j,j)
-        ROCSOLVER_LAUNCH_KERNEL((restore_diag<T, rocblas_int>), dim3(batch_count, 1, 1),
-                                dim3(1, 1, 1), 0, stream, diag, 0, 1, A,
-                                shiftA + idx2D(m - j - 1, n - j - 1, lda), lda, strideA, 1);
+        // // restore original value of A(j,j)
+        // ROCSOLVER_LAUNCH_KERNEL((restore_diag<T, rocblas_int>), dim3(batch_count, 1, 1),
+        //                         dim3(1, 1, 1), 0, stream, diag, 0, 1, A,
+        //                         shiftA + idx2D(m - j - 1, n - j - 1, lda), lda, strideA, 1);
 
         // restore the jth row of A
         if(COMPLEX)
