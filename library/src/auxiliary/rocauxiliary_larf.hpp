@@ -239,7 +239,7 @@ rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
         = (side == rocblas_side_right && m <= LARF_SSKER_MIN_DIM && n <= LARF_SSKER_MAX_DIM);
     if(ssker_left || ssker_right)
     {
-        return larf_run_small(handle, side, m, n, x, shiftx, incx, stridex, alpha, stridep, A,
+        return larf_unit_diag_run_small(handle, side, m, n, x, shiftx, incx, stridex, alpha, stridep, A,
                               shiftA, lda, stridea, batch_count);
     }
 
