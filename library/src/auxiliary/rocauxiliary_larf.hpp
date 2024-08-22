@@ -39,6 +39,35 @@
 
 ROCSOLVER_BEGIN_NAMESPACE
 
+template <bool CONJ, typename T, typename U>
+ROCSOLVER_KERNEL void loadmatA1(const rocblas_int ldw,
+                                const rocblas_int order,
+                                U A,
+                                const rocblas_int shiftA,
+                                const rocblas_int lda,
+                                const rocblas_stride strideA,
+                                T* tmptr)
+{
+    const auto blocksizex = hipBlockDim_x;
+    const auto blocksizey = hipBlockDim_y;
+    const auto b = hipBlockIdx_z;
+    const auto i = hipBlockIdx_x * blocksizex + hipThreadIdx_x;
+    const auto j = hipBlockIdx_y * blocksizey + hipThreadIdx_y;
+    rocblas_stride strideW = rocblas_stride(ldw) * order;
+
+    if(i < ldw && j < order)
+    {
+        T *Ap, *Wp;
+        Wp = tmptr + b * strideW;
+        Ap = load_ptr_batch<T>(A, b, shiftA, strideA);
+
+        if constexpr (CONJ)
+            Wp[i + j * ldw] = -conj(Ap[i + j * lda]);
+        else
+            Wp[i + j * ldw] = -Ap[i + j * lda];
+    }
+}
+
 template <bool BATCHED, typename T, typename I>
 void rocsolver_larf_getMemorySize(const rocblas_side side,
                                   const I m,
@@ -263,31 +292,17 @@ rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
     //      IT WILL WORK ON THE ENTIRE MATRIX/VECTOR REGARDLESS OF
     //      ZERO ENTRIES ****
 
-    // std::cout << "larf unit diag" << std::endl;
-
-    // compute W = A1 * 1
-    // rocblas_int blocksx = (order - 1) / 32 + 1;
-    // rocblas_int blocksy = 1;
+    // compute W = -A1' or -A1
     if(leftside)
     {
-        // order = n;
-        // ldw = k;
-        // trap = (m > k);
-        // ROCSOLVER_LAUNCH_KERNEL(copymatA1, dim3(blocksx, blocksy, batch_count), dim3(32, 32), 0, stream,
-        //                     1, n, A, shiftA, lda, stridea, Abyx);
-        ROCSOLVER_LAUNCH_KERNEL((copy_mat<T, U>), dim3(1, (order - 1) / 32 + 1, batch_count),
-                                    dim3(32, 32), 0, stream, copymat_to_buffer, 1, n, A, shiftA,
+        ROCSOLVER_LAUNCH_KERNEL((loadmatA1<COMPLEX, T, U>), dim3(1, (order - 1) / 32 + 1, batch_count),
+                                    dim3(32, 32), 0, stream, 1, n, A, shiftA,
                                     lda, stridea, Abyx);
     }
     else
     {
-        // order = k;
-        // ldw = m;
-        // trap = (n > k);
-        // ROCSOLVER_LAUNCH_KERNEL(copymatA1, dim3(blocksx, blocksy, batch_count), dim3(32, 32), 0, stream,
-        //                     m, 1, A, shiftA, lda, stridea, Abyx);
-        ROCSOLVER_LAUNCH_KERNEL((copy_mat<T, U>), dim3((order - 1) / 32 + 1, 1, batch_count),
-                                    dim3(32, 32), 0, stream, copymat_to_buffer, m, 1, A, shiftA,
+        ROCSOLVER_LAUNCH_KERNEL((loadmatA1<false, T, U>), dim3((order - 1) / 32 + 1, 1, batch_count),
+                                    dim3(32, 32), 0, stream, m, 1, A, shiftA,
                                     lda, stridea, Abyx);
     }
     
@@ -297,17 +312,14 @@ rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
     //  or  W = -A*X = -A1 + -A2*X2
     if(leftside)
     {
-        if(COMPLEX)
-            rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
-
         rocblasCall_gemv<T>(handle, trans, m - 1, n, cast2constType<T>(scalars), 0, A, shiftA + idx2D(1, 0, lda), lda, stridea,
-                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars), 0, Abyx, 0, 1,
+                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars + 2), 0, Abyx, 0, 1,
                             order, batch_count, workArr);
     }
     else
     {
         rocblasCall_gemv<T>(handle, trans, m, n - 1, cast2constType<T>(scalars), 0, A, shiftA + idx2D(0, 1, lda), lda, stridea,
-                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars), 0, Abyx, 0, 1,
+                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars + 2), 0, Abyx, 0, 1,
                             order, batch_count, workArr);
     }
 
