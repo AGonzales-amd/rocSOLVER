@@ -293,16 +293,20 @@ rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
     
 
     // compute the matrix vector product
-    //      W = -A'*X = -A1' + -A2'*X2 
+    //      W = -A'*X = -A1' + -A2'*X2 --- W = -X'*A = -A1 + -X2'*A2
     //  or  W = -A*X = -A1 + -A2*X2
     if(leftside)
     {
-        if(COMPLEX)
-            rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
+        // if(COMPLEX)
+        //     rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
 
-        rocblasCall_gemv<T>(handle, trans, m - 1, n, cast2constType<T>(scalars), 0, A, shiftA + idx2D(1, 0, lda), lda, stridea,
-                            x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars), 0, Abyx, 0, 1,
-                            order, batch_count, workArr);
+        // rocblasCall_gemv<T>(handle, trans, m - 1, n, cast2constType<T>(scalars), 0, A, shiftA + idx2D(1, 0, lda), lda, stridea,
+        //                     x, (shiftx + incx), incx, stridex, cast2constType<T>(scalars), 0, Abyx, 0, 1,
+        //                     order, batch_count, workArr);
+
+        rocblasCall_gemm<T, I>(handle, trans, rocblas_operation_none, 1, n, m - 1, cast2constType<T>(scalars), x,
+                             (shiftx + incx), incx, stridex, A, shiftA + idx2D(1, 0, lda), lda, stridea, cast2constType<T>(scalars),
+                             Abyx, 0, 1, order, batch_count, workArr);
     }
     else
     {
@@ -311,10 +315,12 @@ rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
                             order, batch_count, workArr);
     }
 
-    // compute the rank-1 update  (A2 + tau*X2*W'  or A2 + tau*W*X2')
+    // compute the rank-1 update  (A2 + tau*X2*W' --- A2 + tau*X2*W  or A2 + tau*W*X2')
     if(leftside)
     {
-        rocblasCall_ger<COMPLEX, T, I>(handle, m - 1, n, alpha, stridep, x, (shiftx + incx), incx, stridex, Abyx,
+        // rocblasCall_ger<COMPLEX, T, I>(handle, m - 1, n, alpha, stridep, x, (shiftx + incx), incx, stridex, Abyx,
+        //                                0, 1, order, A, shiftA + idx2D(1, 0, lda), lda, stridea, batch_count, workArr);
+        rocblasCall_ger<false, T, I>(handle, m - 1, n, alpha, stridep, x, (shiftx + incx), incx, stridex, Abyx,
                                        0, 1, order, A, shiftA + idx2D(1, 0, lda), lda, stridea, batch_count, workArr);
     }
     else
@@ -323,11 +329,11 @@ rocblas_status rocsolver_larf_unit_diag_template(rocblas_handle handle,
                                        incx, stridex, A, shiftA + idx2D(0, 1, lda), lda, stridea, batch_count, workArr);
     }
 
-    // compute A1 + tau*1*W' or A1 + tau*W*1
+    // compute A1 + tau*1*W or A1 + tau*W*1
     if(leftside)
     {
-        if(COMPLEX)
-            rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
+        // if(COMPLEX)
+        //     rocsolver_lacgv_template<T>(handle, order, Abyx, (I)0, (I)1, order, batch_count);
 
         rocblasCall_axpy<T>(handle, order, alpha, stridep, Abyx, 0, 1, order, A, shiftA, lda, stridea, batch_count, workArr);
     }
