@@ -75,6 +75,9 @@ ROCSOLVER_KERNEL void __launch_bounds__(LARF_SSKER_THREADS)
     I start = (incX > 0 ? 0 : (m - 1) * -incX);
     for(I i = rid; i < m; i += LARF_SSKER_THREADS)
         xs[i] = x[start + i * incX];
+
+    if(rid == 0)
+        xs[0] = T(1);
     __syncthreads();
 
     for(I j = cid; j < n; j += LARF_SSKER_BLOCKS)
@@ -124,6 +127,9 @@ ROCSOLVER_KERNEL void __launch_bounds__(LARF_SSKER_THREADS)
     I start = (incX > 0 ? 0 : (n - 1) * -incX);
     for(I j = cid; j < n; j += LARF_SSKER_THREADS)
         xs[j] = x[start + j * incX];
+
+    if(cid == 0)
+        xs[0] = T(1);
     __syncthreads();
 
     for(I i = rid; i < m; i += LARF_SSKER_BLOCKS)
