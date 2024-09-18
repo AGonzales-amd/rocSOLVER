@@ -151,9 +151,9 @@ rocblas_status rocsolver_geqr2_template(rocblas_handle handle,
             else
             {
                 // insert one in A(j,j) tobuild/apply the householder matrix
-                // ROCSOLVER_LAUNCH_KERNEL((set_diag<T, I>), dim3(batch_count, 1, 1), dim3(1, 1, 1), 0,
-                //                         stream, diag, 0, 1, A, shiftA + idx2D(j, j, lda), lda, strideA,
-                //                         (I)1, true);
+                ROCSOLVER_LAUNCH_KERNEL((set_diag<T, I>), dim3(batch_count, 1, 1), dim3(1, 1, 1), 0,
+                                        stream, diag, 0, 1, A, shiftA + idx2D(j, j, lda), lda, strideA,
+                                        (I)1, true);
 
                 rocsolver_larf_template(handle, rocblas_side_left, m - j, n - j - 1, A,
                                         shiftA + idx2D(j, j, lda), (I)1, strideA, (ipiv + j), strideP,
@@ -161,9 +161,9 @@ rocblas_status rocsolver_geqr2_template(rocblas_handle handle,
                                         scalars, Abyx_norms, (T**)work_workArr);
 
                 // restore original value of A(j,j)
-                // ROCSOLVER_LAUNCH_KERNEL((restore_diag<T, I>), dim3(batch_count, 1, 1), dim3(1, 1, 1), 0,
-                //                         stream, diag, 0, 1, A, shiftA + idx2D(j, j, lda), lda, strideA,
-                //                         (I)1);
+                ROCSOLVER_LAUNCH_KERNEL((restore_diag<T, I>), dim3(batch_count, 1, 1), dim3(1, 1, 1), 0,
+                                        stream, diag, 0, 1, A, shiftA + idx2D(j, j, lda), lda, strideA,
+                                        (I)1);
             }
 
             // restore tau
