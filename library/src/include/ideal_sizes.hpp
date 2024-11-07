@@ -505,13 +505,13 @@
 /******************************* larft ****************************************
 *******************************************************************************/
 #ifndef LARFT_L3_NUM_INTERVALS_DEFAULT
-#define LARFT_L3_NUM_INTERVALS_DEFAULT 1
+#define LARFT_L3_NUM_INTERVALS_DEFAULT 2
 #endif
 #ifndef LARFT_L3_INTERVALS_DEFAULT
-#define LARFT_L3_INTERVALS_DEFAULT 1024
+#define LARFT_L3_INTERVALS_DEFAULT 128, 8192
 #endif
 #ifndef LARFT_L3_DEFAULT
-#define LARFT_L3_DEFAULT 0, 1
+#define LARFT_L3_DEFAULT 0, 1, 0
 #endif
 #ifndef LARFT_L3_NUM_INTERVALS_C_COL
 #define LARFT_L3_NUM_INTERVALS_C_COL 2
