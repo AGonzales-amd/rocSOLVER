@@ -15,8 +15,16 @@
 # potrf         -> Cholesky factorization
 # potrfBatch    -> Cholesky factorization batch version
 # geqrf         -> Orthogonal factorization
+# sytrd
+# magma_syevd
+# magma_syevdx
+# magma_potrf_hybrid
+# magma_potrf_native
+# magma_geqrf
+# magma_sytrd
+# magma_sytrd2
 # (note: several can be selected)
-Slist="syevd syevdx syevj syevjBatch gesvd gesvdj gesvdjBatch potrf potrfBatch geqrf"
+Slist="syevd syevdx syevj syevjBatch gesvd gesvdj gesvdjBatch potrf potrfBatch geqrf sytrd magma_syevd magma_syevdx magma_potrf_hybrid magma_potrf_native magma_geqrf magma_sytrd magma_sytrd2"
 
 # precisions to use
 # valid options are: (default is d)
@@ -124,7 +132,7 @@ mkdir -p "$output_dir"
 for s in $suite; do
     for p in $precision; do
         for c in $case; do
-            python3 rocsolver-perfoptim-suite.py -v -o "$output_dir/$p${s}_benchmarks.csv" $s $p $c
+            python3 rocsolver-perfoptim-suite.py -v -o "$output_dir/$p${s}_benchmarks.csv" --exe "../../magma-build/release/clients/staging/rocsolver-bench" $s $p $c
         done
     done
 done

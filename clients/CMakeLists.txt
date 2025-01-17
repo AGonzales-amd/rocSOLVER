@@ -30,6 +30,8 @@ if(UNIX)
   enable_language(Fortran)
 endif()
 
+option(MAGMA_PATH "Path to MAGMA download." "")
+
 # Specify where to put the client binaries
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/staging")
 
@@ -42,6 +44,9 @@ if(NOT TARGET rocsolver)
 endif()
 
 if(BUILD_CLIENTS_BENCHMARKS OR BUILD_CLIENTS_TESTS)
+  find_library(MAGMA_LIB magma REQUIRED PATHS "${MAGMA_PATH}/lib")
+  find_library(OPENBLAS_LIB openblas REQUIRED)
+
   if(ROCSOLVER_FIND_PACKAGE_LAPACK_CONFIG)
     find_package(LAPACK 3.7 REQUIRED CONFIG)
   else()
@@ -58,11 +63,14 @@ if(BUILD_CLIENTS_BENCHMARKS OR BUILD_CLIENTS_TESTS)
   add_library(clients-common INTERFACE)
   target_include_directories(clients-common INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    "${MAGMA_PATH}/include"
   )
   target_link_libraries(clients-common INTERFACE
     ${LAPACK_LIBRARIES}
     $<$<PLATFORM_ID:Linux>:stdc++fs>
     fmt::fmt
+    ${MAGMA_LIB}
+    ${OPENBLAS_LIB}
   )
   target_link_options(clients-common INTERFACE
     ${LAPACK_LINKER_FLAGS}

@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <bool STRIDED, bool POTRF, typename T, typename I, typename U>
 void potf2_potrf_checkBadArgs(const rocblas_handle handle,
@@ -529,6 +530,130 @@ void testing_potf2_potrf(Arguments& argus)
 
     // ensure all arguments were consumed
     argus.validate_consumed();
+}
+
+template <magma_mode_t MODE, typename T>
+void testing_magma_potrf(Arguments& argus)
+{
+    using MT = rocblas2magma_type_t<T>;
+    using S = decltype(std::real(T{}));
+
+    // get arguments
+    rocblas_local_handle handle;
+    char uploC = argus.get<char>("uplo");
+    rocblas_int n = argus.get<rocblas_int>("n");
+    rocblas_int lda = argus.get<rocblas_int>("lda", n);
+
+    rocblas_fill uplo = char2rocblas_fill(uploC);
+    rocblas_int hot_calls = argus.iters;
+
+    double gpu_time_used = 0, max_error = 0;
+
+    CHECK_MAGMA_ERROR(magma_init());
+    // magma_print_environment();
+
+    int device = 0;
+    CHECK_HIP_ERROR(hipGetDevice(&device));
+    magma_setdevice(device);
+
+    magma_int_t size_A = n * lda;
+
+    magma_int_t info, hinfo;
+
+    // /* Initialize the matrix */
+    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
+    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+
+    if(argus.norm_check)
+    {
+        host_strided_batch_vector<T> hARes(size_A, 1, size_A, 1);
+
+        // input data initialization
+        potf2_potrf_initData<true, true, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+                                            argus.singular);
+
+        // hash input
+        size_t hashA = deterministic_hash(hA, 1);
+
+        // execute computations
+        // GPU lapack
+        if(MODE == MagmaHybrid)
+            (magma_potrf_gpu(rocblas2magma_fill(uplo),
+                                            n, (MT*)dA.data(), lda, &info));
+        else
+            (magma_potrf_native(rocblas2magma_fill(uplo),
+                                            n, (MT*)dA.data(), lda, &info));
+        CHECK_HIP_ERROR(hARes.transfer_from(dA));
+
+        // hash output
+        size_t hashARes = deterministic_hash(hARes, 1);
+
+        // CPU lapack
+        cpu_potrf(uplo, n, hA.data(), lda, &hinfo);
+
+        // error is ||hA - hARes|| / ||hA|| (ideally ||LL' - Lres Lres'|| / ||LL'||)
+        // (THIS DOES NOT ACCOUNT FOR NUMERICAL REPRODUCIBILITY ISSUES.
+        // IT MIGHT BE REVISITED IN THE FUTURE)
+        // using frobenius norm
+        rocblas_int nn;
+        max_error = 0;
+
+        nn = info == 0 ? n : info;
+        // (TODO: For now, the algorithm is modifying the whole input matrix even when
+        //  it is not positive definite. So we only check the principal nn-by-nn submatrix.
+        //  Once this is corrected, nn could be always equal to n.)
+        max_error = (uplo == rocblas_fill_lower)
+            ? norm_error_lowerTr('F', nn, nn, lda, hA.data(), hARes.data())
+            : norm_error_upperTr('F', nn, nn, lda, hA.data(), hARes.data());
+
+        // also check info for non positive definite cases
+        EXPECT_EQ(hinfo, info);
+        if(hinfo != info)
+            max_error++;
+
+        ROCSOLVER_TEST_CHECK(T, max_error, n);
+    }
+
+
+    potf2_potrf_initData<true, false, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+                                         argus.singular);
+    
+    // cold calls
+    for(int iter = 0; iter < 2; iter++)
+    {
+        potf2_potrf_initData<false, true, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+                                             argus.singular);
+
+        if(MODE == MagmaHybrid)
+            (magma_potrf_gpu(rocblas2magma_fill(uplo),
+                                            n, (MT*)dA.data(), lda, &info));
+        else
+            (magma_potrf_native(rocblas2magma_fill(uplo),
+                                            n, (MT*)dA.data(), lda, &info));
+    }
+
+    for(rocblas_int iter = 0; iter < hot_calls; iter++)
+    {
+        potf2_potrf_initData<false, true, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+                                             argus.singular);
+
+        double start = magma_wtime() * 1e6;
+        if(MODE == MagmaHybrid)
+            (magma_potrf_gpu(rocblas2magma_fill(uplo),
+                                            n, (MT*)dA.data(), lda, &info));
+        else
+            (magma_potrf_native(rocblas2magma_fill(uplo),
+                                            n, (MT*)dA.data(), lda, &info));
+        gpu_time_used += (magma_wtime() * 1e6) - start;
+    }
+    gpu_time_used /= hot_calls;
+
+    CHECK_MAGMA_ERROR(magma_finalize());
+
+    if(argus.norm_check)
+        rocsolver_bench_output(gpu_time_used, max_error, n*get_epsilon<T>());
+    else
+        rocsolver_bench_output(gpu_time_used);
 }
 
 #define EXTERN_TESTING_POTF2_POTRF(...) \

@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <bool STRIDED, bool SYTRD, typename S, typename T, typename U>
 void sytxx_hetxx_checkBadArgs(const rocblas_handle handle,
@@ -648,6 +649,221 @@ void testing_sytxx_hetxx(Arguments& argus)
 
     // ensure all arguments were consumed
     argus.validate_consumed();
+}
+
+template <magma_int_t VER, typename T>
+void testing_magma_sytrd_hetrd(Arguments& argus)
+{
+    using MT = rocblas2magma_type_t<T>;
+    using S = decltype(std::real(T{}));
+
+    // get arguments
+    rocblas_local_handle handle;
+    char uploC = argus.get<char>("uplo");
+    rocblas_int n = argus.get<rocblas_int>("n");
+    rocblas_int lda = argus.get<rocblas_int>("lda", n);
+
+    rocblas_fill uplo = char2rocblas_fill(uploC);
+    rocblas_int hot_calls = argus.iters;
+
+    double gpu_time_used = 0, max_error = 0;
+
+    CHECK_MAGMA_ERROR(magma_init());
+    // magma_print_environment();
+
+    int device = 0;
+    CHECK_HIP_ERROR(hipGetDevice(&device));
+    magma_setdevice(device);
+
+    magma_int_t size_A = n * lda;
+    size_t size_D = n;
+    size_t size_E = n - 1;
+    size_t size_tau = n - 1;
+
+    magma_int_t info;
+
+    MT* w_A;
+
+    /* Allocate memory for the matrix */
+    CHECK_MAGMA_ERROR(magma_malloc_pinned(&w_A, size_A));
+
+    // /* Initialize the matrix */
+    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
+    host_strided_batch_vector<T> hARes(size_A, 1, size_A, 1);
+    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+    host_strided_batch_vector<S> hD(size_D, 1, size_D, 1);
+    host_strided_batch_vector<S> hE(size_E, 1, size_E, 1);
+    host_strided_batch_vector<T> hTau(size_tau, 1, size_tau, 1);
+
+    magma_int_t nb     = magma_get_chetrd_nb(n);
+    magma_int_t lwork  = n*nb;  /* We suppose the magma nb is bigger than lapack nb */
+    magma_int_t ldwork = lda*magma_ceildiv(n,64) + 2*lda*nb;
+
+    /* Allocate workspace */
+    MT *work, *dwork;
+    CHECK_MAGMA_ERROR(magma_malloc_pinned(&work, lwork));
+    CHECK_MAGMA_ERROR(magma_malloc(&dwork, ldwork));
+
+    if(argus.norm_check)
+    {
+        constexpr bool COMPLEX = rocblas_is_complex<T>;
+
+        std::vector<T> hW(32 * n);
+
+        // input data initialization
+        sytxx_hetxx_initData<true, true, T>(handle, n, dA, lda, 1, hA);
+
+        // execute computations
+        // GPU lapack
+        if(VER == 0)
+        {
+            magma_sytrd_hetrd_gpu(rocblas2magma_fill(uplo),
+                                  n, (MT*)dA.data(), lda, hD.data(), hE.data(),
+                                  (MT*)hTau.data(), (MT*)w_A, lda,
+                                  work, lwork, &info);
+        }
+        else
+        {
+            magma_sytrd2_hetrd2_gpu(rocblas2magma_fill(uplo),
+                                    n, (MT*)dA.data(), lda, hD.data(), hE.data(),
+                                    (MT*)hTau.data(), (MT*)w_A, lda,
+                                    work, lwork, dwork, ldwork, &info);
+        }
+        CHECK_HIP_ERROR(hARes.transfer_from(dA));
+
+        // Reconstruct matrix A from the factorization for implicit testing
+        // A = H(n-1)...H(2)H(1)*T*H(1)'H(2)'...H(n-1)' if upper
+        // A = H(1)H(2)...H(n-1)*T*H(n-1)'...H(2)'H(1)' if lower
+        std::vector<T> v(n);
+        T* a = hARes.data();
+        T* t = hTau.data();
+
+        if(uplo == rocblas_fill_lower)
+        {
+            for(rocblas_int i = 0; i < n - 2; ++i)
+                a[i + (n - 1) * lda] = 0;
+            a[(n - 2) + (n - 1) * lda] = a[(n - 1) + (n - 2) * lda];
+
+            // for each column
+            for(rocblas_int j = n - 2; j >= 0; --j)
+            {
+                // prepare T and v
+                for(rocblas_int i = 0; i < j - 1; ++i)
+                    a[i + j * lda] = 0;
+                if(j > 0)
+                    a[(j - 1) + j * lda] = a[j + (j - 1) * lda];
+                for(rocblas_int i = j + 2; i < n; ++i)
+                {
+                    v[i - j - 1] = a[i + j * lda];
+                    a[i + j * lda] = 0;
+                }
+                v[0] = 1;
+
+                // apply householder reflector
+                cpu_larf(rocblas_side_left, n - 1 - j, n - j, v.data(), 1, t + j,
+                        a + (j + 1) + j * lda, lda, hW.data());
+                if(COMPLEX)
+                    cpu_lacgv(1, t + j, 1);
+                cpu_larf(rocblas_side_right, n - j, n - 1 - j, v.data(), 1, t + j,
+                        a + j + (j + 1) * lda, lda, hW.data());
+            }
+        }
+
+        else
+        {
+            a[1] = a[lda];
+            for(rocblas_int i = 2; i < n; ++i)
+                a[i] = 0;
+
+            // for each column
+            for(rocblas_int j = 1; j <= n - 1; ++j)
+            {
+                // prepare T and v
+                for(rocblas_int i = 0; i < j - 1; ++i)
+                {
+                    v[i] = a[i + j * lda];
+                    a[i + j * lda] = 0;
+                }
+                v[j - 1] = 1;
+                if(j < n - 1)
+                    a[(j + 1) + j * lda] = a[j + (j + 1) * lda];
+                for(rocblas_int i = j + 2; i < n; ++i)
+                    a[i + j * lda] = 0;
+
+                // apply householder reflector
+                cpu_larf(rocblas_side_left, j, j + 1, v.data(), 1, t + j - 1, a, lda, hW.data());
+                if(COMPLEX)
+                    cpu_lacgv(1, t + j - 1, 1);
+                cpu_larf(rocblas_side_right, j + 1, j, v.data(), 1, t + j - 1, a, lda, hW.data());
+            }
+        }
+
+        // error is ||hA - hARes|| / ||hA||
+        // using frobenius norm
+        max_error = (uplo == rocblas_fill_lower)
+            ? norm_error_lowerTr('F', n, n, lda, hA.data(), hARes.data())
+            : norm_error_upperTr('F', n, n, lda, hA.data(), hARes.data());
+
+        ROCSOLVER_TEST_CHECK(T, max_error, n);
+    }
+
+    
+    sytxx_hetxx_initData<true, false, T>(handle, n, dA, lda, 1, hA);
+    
+    // cold calls
+    for(int iter = 0; iter < 2; iter++)
+    {
+        sytxx_hetxx_initData<false, true, T>(handle, n, dA, lda, 1, hA);
+
+        if(VER == 0)
+        {
+            magma_sytrd_hetrd_gpu(rocblas2magma_fill(uplo),
+                                  n, (MT*)dA.data(), lda, hD.data(), hE.data(),
+                                  (MT*)hTau.data(), (MT*)w_A, lda,
+                                  work, lwork, &info);
+        }
+        else
+        {
+            magma_sytrd2_hetrd2_gpu(rocblas2magma_fill(uplo),
+                                    n, (MT*)dA.data(), lda, hD.data(), hE.data(),
+                                    (MT*)hTau.data(), (MT*)w_A, lda,
+                                    work, lwork, dwork, ldwork, &info);
+        }
+    }
+
+    for(rocblas_int iter = 0; iter < hot_calls; iter++)
+    {
+        sytxx_hetxx_initData<false, true, T>(handle, n, dA, lda, 1, hA);
+
+        double start = magma_wtime() * 1e6;
+        if(VER == 0)
+        {
+            magma_sytrd_hetrd_gpu(rocblas2magma_fill(uplo),
+                                  n, (MT*)dA.data(), lda, hD.data(), hE.data(),
+                                  (MT*)hTau.data(), (MT*)w_A, lda,
+                                  work, lwork, &info);
+        }
+        else
+        {
+            magma_sytrd2_hetrd2_gpu(rocblas2magma_fill(uplo),
+                                    n, (MT*)dA.data(), lda, hD.data(), hE.data(),
+                                    (MT*)hTau.data(), (MT*)w_A, lda,
+                                    work, lwork, dwork, ldwork, &info);
+        }
+        gpu_time_used += (magma_wtime() * 1e6) - start;
+    }
+    gpu_time_used /= hot_calls;
+
+    CHECK_MAGMA_ERROR(magma_free_pinned(w_A));
+    CHECK_MAGMA_ERROR(magma_free_pinned(work));
+    CHECK_MAGMA_ERROR(magma_free(dwork));
+
+    CHECK_MAGMA_ERROR(magma_finalize());
+
+    if(argus.norm_check)
+        rocsolver_bench_output(gpu_time_used, max_error, n*get_epsilon<T>());
+    else
+        rocsolver_bench_output(gpu_time_used);
 }
 
 #define EXTERN_TESTING_SYTXX_HETXX(...) \

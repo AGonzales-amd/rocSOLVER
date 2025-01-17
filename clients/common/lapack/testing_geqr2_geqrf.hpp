@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <bool STRIDED, bool GEQRF, typename T, typename I, typename U>
 void geqr2_geqrf_checkBadArgs(const rocblas_handle handle,
@@ -510,6 +511,94 @@ void testing_geqr2_geqrf(Arguments& argus)
 
     // ensure all arguments were consumed
     argus.validate_consumed();
+}
+
+template <typename T>
+void testing_magma_geqrf(Arguments& argus)
+{
+    using MT = rocblas2magma_type_t<T>;
+    using S = decltype(std::real(T{}));
+
+    // get arguments
+    rocblas_local_handle handle;
+    rocblas_int m = argus.get<rocblas_int>("m");
+    rocblas_int n = argus.get<rocblas_int>("n", m);
+    rocblas_int lda = argus.get<rocblas_int>("lda", m);
+
+    rocblas_int hot_calls = argus.iters;
+
+    double gpu_time_used = 0, max_error = 0;
+
+    CHECK_MAGMA_ERROR(magma_init());
+    // magma_print_environment();
+
+    int device = 0;
+    CHECK_HIP_ERROR(hipGetDevice(&device));
+    magma_setdevice(device);
+
+    magma_int_t size_A = n * lda;
+    magma_int_t size_P = min(m, n);
+
+    magma_int_t info;
+
+    // /* Initialize the matrix */
+    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
+    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+    host_strided_batch_vector<T> ipiv(size_P, 1, size_P, 1);
+
+    if(argus.norm_check)
+    {
+        host_strided_batch_vector<T> hARes(size_A, 1, size_A, 1);
+        host_strided_batch_vector<T> hipiv(size_P, 1, size_P, 1);
+        std::vector<T> hW(n);
+
+        // input data initialization
+        geqr2_geqrf_initData<true, true, T>(handle, m, n, dA, lda, size_A, ipiv, size_P, 1, hA, hipiv);
+
+        // execute computations
+        // GPU lapack
+        magma_geqrf2_gpu(m, n, (MT*)dA.data(), lda, (MT*)ipiv.data(), &info);
+        CHECK_HIP_ERROR(hARes.transfer_from(dA));
+
+        // CPU lapack
+        cpu_geqrf(m, n, hA.data(), lda, hipiv.data(), hW.data(), n);
+
+        // error is ||hA - hARes|| / ||hA|| (ideally ||QR - Qres Rres|| / ||QR||)
+        // (THIS DOES NOT ACCOUNT FOR NUMERICAL REPRODUCIBILITY ISSUES.
+        // IT MIGHT BE REVISITED IN THE FUTURE)
+        // using frobenius norm
+        max_error = norm_error('F', m, n, lda, hA.data(), hARes.data());
+
+        ROCSOLVER_TEST_CHECK(T, max_error, n);
+    }
+
+
+    geqr2_geqrf_initData<true, false, T>(handle, m, n, dA, lda, size_A, ipiv, size_P, 1, hA, ipiv);
+    
+    // cold calls
+    for(int iter = 0; iter < 2; iter++)
+    {
+        geqr2_geqrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, ipiv, size_P, 1, hA, ipiv);
+
+        magma_geqrf2_gpu(m, n, (MT*)dA.data(), lda, (MT*)ipiv.data(), &info);
+    }
+
+    for(rocblas_int iter = 0; iter < hot_calls; iter++)
+    {
+        geqr2_geqrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, ipiv, size_P, 1, hA, ipiv);
+
+        double start = magma_wtime() * 1e6;
+        magma_geqrf2_gpu(m, n, (MT*)dA.data(), lda, (MT*)ipiv.data(), &info);
+        gpu_time_used += (magma_wtime() * 1e6) - start;
+    }
+    gpu_time_used /= hot_calls;
+
+    CHECK_MAGMA_ERROR(magma_finalize());
+
+    if(argus.norm_check)
+        rocsolver_bench_output(gpu_time_used, max_error, n*get_epsilon<T>());
+    else
+        rocsolver_bench_output(gpu_time_used);
 }
 
 #define EXTERN_TESTING_GEQR2_GEQRF(...) \

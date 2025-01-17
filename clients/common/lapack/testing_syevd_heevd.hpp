@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <bool STRIDED, typename T, typename S, typename U>
 void syevd_heevd_checkBadArgs(const rocblas_handle handle,
@@ -402,6 +403,106 @@ void syevd_heevd_getPerfData(const rocblas_handle handle,
     *gpu_time_used /= hot_calls;
 }
 
+// template <typename T>
+// void syevd_heevd_getMagmaPerfData(const rocblas_handle handle,
+//                                   const rocblas_evect evect,
+//                                   const rocblas_fill uplo,
+//                                   const rocblas_int n,
+//                                   const rocblas_int lda,
+//                                   double* gpu_time_used,
+//                                   const rocblas_int hot_calls)
+// {
+//     using MT = rocblas2magma_type_t<T>;
+//     using S = decltype(std::real(T{}));
+
+//     CHECK_MAGMA_ERROR(magma_init());
+//     // magma_print_environment();
+
+//     int device = 0;
+//     CHECK_HIP_ERROR(hipGetDevice(&device));
+//     magma_setdevice(device);
+
+//     magma_int_t size_A = n * lda;
+
+//     magma_int_t info;
+
+//     MT* w_A;
+
+//     /* Allocate memory for the matrix */
+//     CHECK_MAGMA_ERROR(magma_malloc_pinned(&w_A, size_A));
+
+//     // /* Initialize the matrix */
+//     host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
+//     host_strided_batch_vector<S> w(n, 1, n, 1);
+//     device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+//     std::vector<T> tmp;
+//     syevd_heevd_initData<true, false, T>(handle, evect, n, dA, lda, 1, hA, tmp, 0);
+
+//     /* query for workspace sizes */
+//     MT aux_work[1];
+//     S aux_rwork[1];
+//     magma_int_t aux_iwork[1];
+//     CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+//                                        rocblas2magma_fill(uplo),
+//                                        n, NULL, lda, NULL, // A, w
+//                                        NULL, lda,          // host A
+//                                        aux_work, -1,
+//                                        aux_rwork, -1,
+//                                        aux_iwork, -1,
+//                                        &info));
+//     magma_int_t lwork = magma_int_t(real(aux_work[0]));
+//     magma_int_t lrwork = magma_int_t(aux_rwork[0]);
+//     magma_int_t liwork = aux_iwork[0];
+
+//     /* Allocate workspace */
+//     MT* work;
+//     S* rwork;
+//     magma_int_t* iwork;
+//     CHECK_MAGMA_ERROR(magma_malloc_cpu(&iwork, liwork));
+//     CHECK_MAGMA_ERROR(magma_malloc_cpu(&rwork, lrwork));
+//     CHECK_MAGMA_ERROR(magma_malloc_pinned(&work, lwork));
+    
+//     // cold calls
+//     for(int iter = 0; iter < 2; iter++)
+//     {
+//         syevd_heevd_initData<false, true, T>(handle, evect, n, dA, lda, 1, hA, tmp, 0);
+
+//         CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+//                                         rocblas2magma_fill(uplo),
+//                                         n, (MT*)dA.data(), lda, w.data(),
+//                                         w_A, lda,
+//                                         work, lwork,
+//                                         rwork, lrwork,
+//                                         iwork, liwork,
+//                                         &info));
+//     }
+
+//     for(rocblas_int iter = 0; iter < hot_calls; iter++)
+//     {
+//         syevd_heevd_initData<false, true, T>(handle, evect, n, dA, lda, 1, hA, tmp, 0);
+
+//         double start = magma_wtime() * 1e6;
+//         CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+//                                         rocblas2magma_fill(uplo),
+//                                         n, (MT*)dA.data(), lda, w.data(),
+//                                         w_A, lda,
+//                                         work, lwork,
+//                                         rwork, lrwork,
+//                                         iwork, liwork,
+//                                         &info));
+//         *gpu_time_used += (magma_wtime() * 1e6) - start;
+//     }
+//     *gpu_time_used /= hot_calls;
+
+//     CHECK_MAGMA_ERROR(magma_free_cpu(iwork));
+//     CHECK_MAGMA_ERROR(magma_free_cpu(rwork));
+
+//     CHECK_MAGMA_ERROR(magma_free_pinned(w_A));
+//     CHECK_MAGMA_ERROR(magma_free_pinned(work));
+
+//     CHECK_MAGMA_ERROR(magma_finalize());
+// }
+
 template <bool BATCHED, bool STRIDED, typename T>
 void testing_syevd_heevd(Arguments& argus)
 {
@@ -643,6 +744,208 @@ void testing_syevd_heevd(Arguments& argus)
 
     // ensure all arguments were consumed
     argus.validate_consumed();
+}
+
+template <typename T>
+void testing_magma_syevd_heevd(Arguments& argus)
+{
+    using MT = rocblas2magma_type_t<T>;
+    using S = decltype(std::real(T{}));
+
+    // get arguments
+    rocblas_local_handle handle;
+    char evectC = argus.get<char>("evect");
+    char uploC = argus.get<char>("uplo");
+    rocblas_int n = argus.get<rocblas_int>("n");
+    rocblas_int lda = argus.get<rocblas_int>("lda", n);
+
+    rocblas_evect evect = char2rocblas_evect(evectC);
+    rocblas_fill uplo = char2rocblas_fill(uploC);
+    rocblas_int hot_calls = argus.iters;
+
+    double gpu_time_used = 0, max_error = 0;
+
+    CHECK_MAGMA_ERROR(magma_init());
+    // magma_print_environment();
+
+    int device = 0;
+    CHECK_HIP_ERROR(hipGetDevice(&device));
+    magma_setdevice(device);
+
+    magma_int_t size_A = n * lda;
+
+    magma_int_t info;
+
+    MT* w_A;
+
+    /* Allocate memory for the matrix */
+    CHECK_MAGMA_ERROR(magma_malloc_pinned(&w_A, size_A));
+
+    // /* Initialize the matrix */
+    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
+    host_strided_batch_vector<S> w(n, 1, n, 1);
+    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+    std::vector<T> A(argus.norm_check ? size_A : 0);
+
+    /* query for workspace sizes */
+    MT aux_work[1];
+    S aux_rwork[1];
+    magma_int_t aux_iwork[1];
+    CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+                                       rocblas2magma_fill(uplo),
+                                       n, NULL, lda, NULL, // A, w
+                                       NULL, lda,          // host A
+                                       aux_work, -1,
+                                       aux_rwork, -1,
+                                       aux_iwork, -1,
+                                       &info));
+    magma_int_t lwork = magma_int_t(real(aux_work[0]));
+    magma_int_t lrwork = magma_int_t(aux_rwork[0]);
+    magma_int_t liwork = aux_iwork[0];
+
+    /* Allocate workspace */
+    MT* work;
+    S* rwork;
+    magma_int_t* iwork;
+    CHECK_MAGMA_ERROR(magma_malloc_cpu(&iwork, liwork));
+    CHECK_MAGMA_ERROR(magma_malloc_cpu(&rwork, lrwork));
+    CHECK_MAGMA_ERROR(magma_malloc_pinned(&work, lwork));
+
+    if(argus.norm_check)
+    {
+        constexpr bool COMPLEX = rocblas_is_complex<T>;
+        int sizeE, cpu_lwork;
+        if(!COMPLEX)
+        {
+            sizeE = (evect == rocblas_evect_none ? 2 * n + 1 : 1 + 6 * n + 2 * n * n);
+            cpu_lwork = 0;
+        }
+        else
+        {
+            sizeE = (evect == rocblas_evect_none ? n : 1 + 5 * n + 2 * n * n);
+            cpu_lwork = (evect == rocblas_evect_none ? n + 1 : 2 * n + n * n);
+        }
+        int cpu_liwork = (evect == rocblas_evect_none ? 1 : 3 + 5 * n);
+
+        std::vector<T> cpu_work(cpu_lwork);
+        std::vector<S> hE(sizeE);
+        std::vector<int> cpu_iwork(cpu_liwork);
+
+        syevd_heevd_initData<true, true, T>(handle, evect, n, dA, lda, 1, hA, A, argus.norm_check);
+
+        // execute computations
+        // GPU lapack
+        CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+                                        rocblas2magma_fill(uplo),
+                                        n, (MT*)dA.data(), lda, w.data(),
+                                        w_A, lda,
+                                        work, lwork,
+                                        rwork, lrwork,
+                                        iwork, liwork,
+                                        &info));
+
+        
+        host_strided_batch_vector<T> hAres(size_A, 1, size_A, 1);
+        if(evect == rocblas_evect_original)
+            CHECK_HIP_ERROR(hAres.transfer_from(dA));
+
+        // CPU lapack
+        host_strided_batch_vector<S> hD(n, 1, n, 1);
+        rocblas_int hinfo;
+        cpu_syevd_heevd(evect, uplo, n, hA.data(), lda, hD.data(), cpu_work.data(), cpu_lwork, hE.data(), sizeE,
+                        cpu_iwork.data(), cpu_liwork, &hinfo);
+
+        // Check info for non-convergence
+        max_error = 0;
+        EXPECT_EQ(hinfo, info);
+        if(hinfo != info)
+            max_error += 1;
+
+        double err = 0;
+        if(evect != rocblas_evect_original)
+        {
+            // only eigenvalues needed; can compare with LAPACK
+
+            // error is ||hD - hDRes|| / ||hD||
+            // using frobenius norm
+            if(hinfo == 0)
+                err = norm_error('F', 1, n, 1, hD.data(), w.data());
+            max_error = err > max_error ? err : max_error;
+        }
+        else
+        {
+            // both eigenvalues and eigenvectors needed; need to implicitly test
+            // eigenvectors due to non-uniqueness of eigenvectors under scaling
+            if(hinfo == 0)
+            {
+                // multiply A with each of the n eigenvectors and divide by corresponding
+                // eigenvalues
+                T alpha;
+                T beta = 0;
+                for(int j = 0; j < n; j++)
+                {
+                    alpha = T(1) / w[0][j];
+                    cpu_symv_hemv(uplo, n, alpha, A.data(), lda, hAres.data() + j * lda,
+                                1, beta, hA.data() + j * lda, 1);
+                }
+
+                // error is ||hA - hARes|| / ||hA||
+                // using frobenius norm
+                err = norm_error('F', n, n, lda, hA.data(), hAres.data());
+                max_error = err > max_error ? err : max_error;
+            }
+        }
+
+        ROCSOLVER_TEST_CHECK(T, max_error, n);
+    }
+
+    
+    syevd_heevd_initData<true, false, T>(handle, evect, n, dA, lda, 1, hA, A, 0);
+    
+    // cold calls
+    for(int iter = 0; iter < 2; iter++)
+    {
+        syevd_heevd_initData<false, true, T>(handle, evect, n, dA, lda, 1, hA, A, 0);
+
+        CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+                                        rocblas2magma_fill(uplo),
+                                        n, (MT*)dA.data(), lda, w.data(),
+                                        w_A, lda,
+                                        work, lwork,
+                                        rwork, lrwork,
+                                        iwork, liwork,
+                                        &info));
+    }
+
+    for(rocblas_int iter = 0; iter < hot_calls; iter++)
+    {
+        syevd_heevd_initData<false, true, T>(handle, evect, n, dA, lda, 1, hA, A, 0);
+
+        double start = magma_wtime() * 1e6;
+        CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
+                                        rocblas2magma_fill(uplo),
+                                        n, (MT*)dA.data(), lda, w.data(),
+                                        w_A, lda,
+                                        work, lwork,
+                                        rwork, lrwork,
+                                        iwork, liwork,
+                                        &info));
+        gpu_time_used += (magma_wtime() * 1e6) - start;
+    }
+    gpu_time_used /= hot_calls;
+
+    CHECK_MAGMA_ERROR(magma_free_cpu(iwork));
+    CHECK_MAGMA_ERROR(magma_free_cpu(rwork));
+
+    CHECK_MAGMA_ERROR(magma_free_pinned(w_A));
+    CHECK_MAGMA_ERROR(magma_free_pinned(work));
+
+    CHECK_MAGMA_ERROR(magma_finalize());
+
+    if(argus.norm_check)
+        rocsolver_bench_output(gpu_time_used, max_error, n*get_epsilon<T>());
+    else
+        rocsolver_bench_output(gpu_time_used);
 }
 
 #define EXTERN_TESTING_SYEVD_HEEVD(...) \
