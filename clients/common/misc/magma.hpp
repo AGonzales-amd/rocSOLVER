@@ -604,3 +604,84 @@ inline magma_int_t magma_sytrd2_hetrd2_gpu(magma_uplo_t uplo,
 {
     return magma_zhetrd2_gpu(uplo, n, dA, ldda, d, e, tau, A, lda, work, lwork, dwork, ldwork, info);
 }
+
+/* STEDX */
+inline magma_int_t magma_stedx(magma_range_t range,
+                               magma_int_t n,
+                               float vl,
+                               float vu,
+                               magma_int_t il,
+                               magma_int_t iu,
+                               float* d,
+                               float* e,
+                               float* Z,
+                               magma_int_t ldz,
+                               float* rwork,
+                               magma_int_t lrwork,
+                               magma_int_t* iwork,
+                               magma_int_t liwork,
+                               magmaFloat_ptr dwork,
+                               magma_int_t* info)
+{
+    return magma_sstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+}
+
+inline magma_int_t magma_stedx(magma_range_t range,
+                               magma_int_t n,
+                               double vl,
+                               double vu,
+                               magma_int_t il,
+                               magma_int_t iu,
+                               double* d,
+                               double* e,
+                               double* Z,
+                               magma_int_t ldz,
+                               double* rwork,
+                               magma_int_t lrwork,
+                               magma_int_t* iwork,
+                               magma_int_t liwork,
+                               magmaDouble_ptr dwork,
+                               magma_int_t* info)
+{
+    return magma_dstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+}
+
+inline magma_int_t magma_stedx(magma_range_t range,
+                               magma_int_t n,
+                               float vl,
+                               float vu,
+                               magma_int_t il,
+                               magma_int_t iu,
+                               float* d,
+                               float* e,
+                               magmaFloatComplex* Z,
+                               magma_int_t ldz,
+                               float* rwork,
+                               magma_int_t lrwork,
+                               magma_int_t* iwork,
+                               magma_int_t liwork,
+                               magmaFloat_ptr dwork,
+                               magma_int_t* info)
+{
+    return magma_cstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+}
+
+inline magma_int_t magma_stedx(magma_range_t range,
+                               magma_int_t n,
+                               double vl,
+                               double vu,
+                               magma_int_t il,
+                               magma_int_t iu,
+                               double* d,
+                               double* e,
+                               magmaDoubleComplex* Z,
+                               magma_int_t ldz,
+                               double* rwork,
+                               magma_int_t lrwork,
+                               magma_int_t* iwork,
+                               magma_int_t liwork,
+                               magmaDouble_ptr dwork,
+                               magma_int_t* info)
+{
+    return magma_zstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+}

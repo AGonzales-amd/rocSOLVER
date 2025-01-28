@@ -131,6 +131,26 @@ def magma_syevdx_heevdx_suite(*, suite, precision, sizenormal, sizebatch):
                 yield (row, s, f'-f {fn} -r {precision} --erange I --il 1 --iu {p} --evect {v} -n {s} {common}')
 
 """
+STEDCX tests are run, for the given precision and sizes
+"""
+def stedcx_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'stedcx'
+    size = sizenormal
+    for s in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
+        yield (row, s, f'-f {fn} -r {precision} -n {s} {common} --evect I --erange A')
+
+"""
+STEDX tests are run, for the given precision and sizes
+"""
+def magma_stedx_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_stedx'
+    size = sizenormal
+    for s in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
+        yield (row, s, f'-f {fn} -r {precision} -n {s} {common} --evect I --erange A')
+
+"""
 SYEVJ tests are run, for the given precision and sizes, with vectors and without vectors
 """
 def syevj_heevj_suite(*, suite, precision, sizenormal, sizebatch):
@@ -275,6 +295,7 @@ suites = {
   'potrfBatch': potrfBatch_suite,
   'geqrf': geqrf_suite,
   'sytrd': sytrd_hetrd_suite,
+  'stedcx': stedcx_suite,
   'magma_syevd': magma_syevd_heevd_suite,
   'magma_syevdx': magma_syevdx_heevdx_suite,
   'magma_potrf_hybrid': magma_potrf_hybrid_suite,
@@ -282,6 +303,7 @@ suites = {
   'magma_geqrf': magma_geqrf_suite,
   'magma_sytrd': magma_sytrd_hetrd_suite,
   'magma_sytrd2': magma_sytrd2_hetrd2_suite,
+  'magma_stedx': magma_stedx_suite,
 
 }
 
@@ -340,7 +362,7 @@ def execute_benchmarks(output_file, suite, precision, case, bench_executable):
         time = float(out)
         row['gpu_time_us'] = time
         row['log_n'] = math.log10(n)
-        row['log_gpu_time_us'] = math.log10(time)
+        row['log_gpu_time_us'] = math.log10(time) if time > 0 else 0.0
         if not init:
             results = csv.DictWriter(output_file, fieldnames=row.keys(), extrasaction='raise', dialect='excel')
             results.writeheader()

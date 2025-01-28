@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <typename T, typename S, typename U>
 void stedcx_checkBadArgs(const rocblas_handle handle,
@@ -138,7 +139,7 @@ void stedcx_initData(const rocblas_handle handle,
                      Sh& hE,
                      Th& hC)
 {
-    if(CPU)
+    if constexpr (CPU)
     {
         rocblas_init<T>(hD, true);
         rocblas_init<T>(hE, true);
@@ -171,7 +172,7 @@ void stedcx_initData(const rocblas_handle handle,
         }
     }
 
-    if(GPU)
+    if constexpr (GPU)
     {
         // now copy to the GPU
         CHECK_HIP_ERROR(dD.transfer_from(hD));
@@ -535,6 +536,166 @@ void testing_stedcx(Arguments& argus)
 
     // ensure all arguments were consumed
     argus.validate_consumed();
+}
+
+template <typename T>
+void testing_magma_stedx(Arguments& argus)
+{
+    using MT = rocblas2magma_type_t<T>;
+    using S = decltype(std::real(T{}));
+
+    // get arguments
+    rocblas_local_handle handle;
+    char evectC = argus.get<char>("evect");
+    char erangeC = argus.get<char>("erange");
+    rocblas_int n = argus.get<rocblas_int>("n");
+    rocblas_int ldc = argus.get<rocblas_int>("ldc", n);
+    S vl = S(argus.get<double>("vl", 0));
+    S vu = S(argus.get<double>("vu", erangeC == 'V' ? 1 : 0));
+    rocblas_int il = argus.get<rocblas_int>("il", erangeC == 'I' ? 1 : 0);
+    rocblas_int iu = argus.get<rocblas_int>("iu", erangeC == 'I' ? 1 : 0);
+
+    rocblas_evect evect = char2rocblas_evect(evectC);
+    rocblas_erange erange = char2rocblas_erange(erangeC);
+    rocblas_int hot_calls = argus.iters;
+
+    // check non-supported values
+    if(evect != rocblas_evect_tridiagonal)
+    {
+        std::cout << "magma_stedx does not support evect." << std::endl;
+        rocsolver_bench_inform(inform_quick_return);
+    }
+
+    // determine sizes
+    size_t size_D = n;
+    size_t size_E = n;
+    size_t size_C = ldc * n;
+
+    double gpu_time_used = 0, max_error = 0;
+
+    CHECK_MAGMA_ERROR(magma_init());
+    // magma_print_environment();
+
+    int device = 0;
+    CHECK_HIP_ERROR(hipGetDevice(&device));
+    magma_setdevice(device);
+
+    magma_int_t info;
+
+    // /* Initialize the matrix */
+    host_strided_batch_vector<S> hD(size_D, 1, size_D, 1);
+    host_strided_batch_vector<S> hE(size_E, 1, size_E, 1);
+
+    MT* hC;
+    CHECK_MAGMA_ERROR(magma_malloc_pinned(&hC, size_C));
+
+    magma_int_t lrwork = 1 + 4*n + 2*n*n;
+    magma_int_t liwork = 3 + 5*n;
+    magma_int_t ldwork = 3*n*n/2 + 3*n;
+
+    /* Allocate workspace */
+    S *rwork, *dwork;
+    magma_int_t* iwork;
+    CHECK_MAGMA_ERROR(magma_malloc_cpu(&iwork, liwork));
+    CHECK_MAGMA_ERROR(magma_malloc_cpu(&rwork, lrwork));
+    CHECK_MAGMA_ERROR(magma_malloc(&dwork, ldwork));
+    
+    host_strided_batch_vector<S> mock_hC(0, 0, 0, 0);
+    device_strided_batch_vector<S> mock_dD(0, 0, 0, 0);
+    device_strided_batch_vector<S> mock_dE(0, 0, 0, 0);
+    device_strided_batch_vector<S> mock_dC(0, 0, 0, 0);
+
+    if(argus.norm_check)
+    {
+        std::vector<S> hwork(4 * n);
+        std::vector<int> hiwork(3 * n);
+        std::vector<rocblas_int> hIblock(n);
+        std::vector<rocblas_int> hIsplit(n);
+        rocblas_int hnsplit, hinfo;
+        S atol = 2 * get_safemin<S>();
+
+        size_t size_W = n;
+        
+        host_strided_batch_vector<S> hhD(size_D, 1, size_D, 1);
+        host_strided_batch_vector<S> hhE(size_E, 1, size_E, 1);
+        host_strided_batch_vector<S> hW(size_W, 1, size_W, 1);
+        host_strided_batch_vector<rocblas_int> hnev(1, 1, 1, 1);
+
+        // input data initialization
+        stedcx_initData<true, false, S>(handle, evect, n, mock_dD, mock_dE, mock_dC, ldc, hD, hE, mock_hC);
+        hhD.copy_from(hD);
+        hhE.copy_from(hE);
+
+        // execute computations
+        // GPU lapack
+        magma_stedx(rocblas2magma_erange(erange), n, vl, vu, il, iu, hD.data(), hE.data(), hC, ldc,
+                    rwork, lrwork, iwork, liwork, dwork, &info);
+
+        // CPU lapack
+        cpu_stebz(erange, rocblas_eorder_entire, n, vl, vu, il, iu, atol, hhD[0], hhE[0], hnev[0],
+                &hnsplit, hW[0], hIblock.data(), hIsplit.data(), hwork.data(), hiwork.data(), &hinfo);
+
+        // check info
+        EXPECT_EQ(hinfo, info);
+        if(hinfo != info)
+            max_error = 1;
+        else
+            max_error = 0;
+
+        // if finding eigenvalues succeded, check values
+        if(info == 0)
+        {
+            // check number of computed eigenvalues
+            rocblas_int nn = hnev[0][0];
+
+            // error is ||hW - hWRes|| / ||hW||
+            // using frobenius norm
+            double err = norm_error('F', 1, nn, 1, hW[0], hD[0]);
+            max_error = err > max_error ? err : max_error;
+        }
+
+        ROCSOLVER_TEST_CHECK(T, max_error, n);
+    }
+
+    stedcx_initData<true, false, S>(handle, evect, n, mock_dD, mock_dE, mock_dC, ldc, hD, hE, mock_hC);
+    
+    // cold calls
+    for(int iter = 0; iter < 2; iter++)
+    {
+        stedcx_initData<true, false, S>(handle, evect, n, mock_dD, mock_dE, mock_dC, ldc, hD, hE,
+                                        mock_hC);
+
+        magma_stedx(rocblas2magma_erange(erange), n, vl, vu, il, iu, hD.data(), hE.data(), hC, ldc,
+                    rwork, lrwork, iwork, liwork, dwork, &info);
+
+        assert(info >= 0);
+    }
+
+    for(rocblas_int iter = 0; iter < hot_calls; iter++)
+    {
+        stedcx_initData<true, false, S>(handle, evect, n, mock_dD, mock_dE, mock_dC, ldc, hD, hE,
+                                        mock_hC);
+
+        double start = magma_wtime() * 1e6;
+        magma_stedx(rocblas2magma_erange(erange), n, vl, vu, il, iu, hD.data(), hE.data(), hC, ldc,
+                    rwork, lrwork, iwork, liwork, dwork, &info);
+        gpu_time_used += (magma_wtime() * 1e6) - start;
+
+        assert(info >= 0);
+    }
+    gpu_time_used /= hot_calls;
+
+    CHECK_MAGMA_ERROR(magma_free_pinned(hC));
+    CHECK_MAGMA_ERROR(magma_free_cpu(iwork));
+    CHECK_MAGMA_ERROR(magma_free_cpu(rwork));
+    CHECK_MAGMA_ERROR(magma_free(dwork));
+
+    CHECK_MAGMA_ERROR(magma_finalize());
+
+    if(argus.norm_check)
+        rocsolver_bench_output(gpu_time_used, max_error, n*get_epsilon<T>());
+    else
+        rocsolver_bench_output(gpu_time_used);
 }
 
 #define EXTERN_TESTING_STEDCX(...) extern template void testing_stedcx<__VA_ARGS__>(Arguments&);

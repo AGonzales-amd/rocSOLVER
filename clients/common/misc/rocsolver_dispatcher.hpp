@@ -148,6 +148,7 @@ class rocsolver_dispatcher
             {"stedc", testing_stedc<T>},
             {"stedcj", testing_stedcj<T>},
             {"stedcx", testing_stedcx<T>},
+            {"magma_stedx", testing_magma_stedx<T>},
             {"stein", testing_stein<T>},
             {"lasyf", testing_lasyf<T>},
             {"lauum", testing_lauum<T>},

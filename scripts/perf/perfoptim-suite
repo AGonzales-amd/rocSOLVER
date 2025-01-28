@@ -16,6 +16,7 @@
 # potrfBatch    -> Cholesky factorization batch version
 # geqrf         -> Orthogonal factorization
 # sytrd
+# stedcx
 # magma_syevd
 # magma_syevdx
 # magma_potrf_hybrid
@@ -23,8 +24,9 @@
 # magma_geqrf
 # magma_sytrd
 # magma_sytrd2
+# magma_stedx
 # (note: several can be selected)
-Slist="syevd syevdx syevj syevjBatch gesvd gesvdj gesvdjBatch potrf potrfBatch geqrf sytrd magma_syevd magma_syevdx magma_potrf_hybrid magma_potrf_native magma_geqrf magma_sytrd magma_sytrd2"
+Slist="syevd syevdx syevj syevjBatch gesvd gesvdj gesvdjBatch potrf potrfBatch geqrf sytrd magma_syevd magma_syevdx magma_potrf_hybrid magma_potrf_native magma_geqrf magma_sytrd magma_sytrd2 stedcx magma_stedx"
 
 # precisions to use
 # valid options are: (default is d)
