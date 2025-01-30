@@ -2,6 +2,7 @@
 
 #include "magma_operators.h"
 #include "magma_v2.h"
+#include "magma_lapack.hpp"
 #include <rocblas/rocblas.h>
 #include <rocsolver/rocsolver.h>
 

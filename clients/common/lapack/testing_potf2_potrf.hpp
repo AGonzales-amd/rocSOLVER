@@ -136,33 +136,46 @@ void potf2_potrf_initData(const rocblas_handle handle,
                           Uh& hInfo,
                           const bool singular)
 {
+    using MT = rocblas2magma_type_t<T>;
+    typedef typename blas::traits<MT>::real_t real_t;
     if(CPU)
     {
-        rocblas_init<T>(hA, true);
-
-        for(I b = 0; b < bc; ++b)
-        {
-            // scale to ensure positive definiteness
-            for(I i = 0; i < n; i++)
-                hA[b][i + i * lda] = hA[b][i + i * lda] * sconj(hA[b][i + i * lda]) * 400;
-
-            if(singular && (b == bc / 4 || b == bc / 2 || b == bc - 1))
-            {
-                // make some matrices not positive definite
-                // always the same elements for debugging purposes
-                // the algorithm must detect the lower order of the principal minors <= 0
-                // in those matrices in the batch that are non positive definite
-                I i = n / 4 + b;
-                i -= (i / n) * n;
-                hA[b][i + i * lda] = 0;
-                i = n / 2 + b;
-                i -= (i / n) * n;
-                hA[b][i + i * lda] = 0;
-                i = n - 1 + b;
-                i -= (i / n) * n;
-                hA[b][i + i * lda] = 0;
-            }
+        magma_int_t b = 0;
+        magma_int_t idist = (magma_int_t) 1;
+        magma_int_t sizeA = lda * n;
+        magma_int_t iseed[4] = {0, 0, 0, 1};
+        lapack::larnv( idist, iseed, sizeA, (MT*)hA[b] );
+        for (int i = 0; i < n; ++i) {
+            real_t sum = max( blas::asum( n, (MT*)hA[b] + lda * i, 1    ),    // i-th col
+                              blas::asum( n, (MT*)hA[b] + i, lda ) );  // i-th row
+            hA[b][i + i * lda] = sum;
         }
+
+        // rocblas_init<T>(hA, true);
+
+        // for(I b = 0; b < bc; ++b)
+        // {
+        //     // scale to ensure positive definiteness
+        //     for(I i = 0; i < n; i++)
+        //         hA[b][i + i * lda] = hA[b][i + i * lda] * sconj(hA[b][i + i * lda]) * 400;
+
+        //     if(singular && (b == bc / 4 || b == bc / 2 || b == bc - 1))
+        //     {
+        //         // make some matrices not positive definite
+        //         // always the same elements for debugging purposes
+        //         // the algorithm must detect the lower order of the principal minors <= 0
+        //         // in those matrices in the batch that are non positive definite
+        //         I i = n / 4 + b;
+        //         i -= (i / n) * n;
+        //         hA[b][i + i * lda] = 0;
+        //         i = n / 2 + b;
+        //         i -= (i / n) * n;
+        //         hA[b][i + i * lda] = 0;
+        //         i = n - 1 + b;
+        //         i -= (i / n) * n;
+        //         hA[b][i + i * lda] = 0;
+        //     }
+        // }
     }
 
     if(GPU)
@@ -240,6 +253,9 @@ void potf2_potrf_getError(const rocblas_handle handle,
             err++;
     }
     *max_err += err;
+
+    std::cout << "hinfo: " << hInfo[0][0] << std::endl;
+    std::cout << "info: " << hInfoRes[0][0] << std::endl;
 }
 
 template <bool STRIDED, bool POTRF, typename T, typename I, typename Td, typename Id, typename Th, typename Uh>
@@ -610,6 +626,9 @@ void testing_magma_potrf(Arguments& argus)
         EXPECT_EQ(hinfo, info);
         if(hinfo != info)
             max_error++;
+
+        std::cout << "hinfo: " << hinfo << std::endl;
+        std::cout << "info: " << info << std::endl;
 
         ROCSOLVER_TEST_CHECK(T, max_error, n);
     }

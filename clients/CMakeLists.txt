@@ -30,6 +30,8 @@ if(UNIX)
   enable_language(Fortran)
 endif()
 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DADD_")
+
 option(MAGMA_PATH "Path to MAGMA download." "")
 
 # Specify where to put the client binaries
