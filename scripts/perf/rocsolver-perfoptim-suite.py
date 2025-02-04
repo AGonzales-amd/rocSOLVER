@@ -40,7 +40,7 @@ from subprocess import Popen, PIPE
 #################################################
 ######### Benchmark suites definitions ##########
 #################################################
-common = '--iters 3 --perf 1 --device 60' #always do 3 iterations in perf mode
+common = '--iters 3 --perf 1 --device 6' #always do 3 iterations in perf mode
 
 """
 SYEVD tests are run, for the given precision and sizes, with vectors and without vectors

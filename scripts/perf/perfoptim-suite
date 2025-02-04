@@ -134,7 +134,7 @@ mkdir -p "$output_dir"
 for s in $suite; do
     for p in $precision; do
         for c in $case; do
-            python3 rocsolver-perfoptim-suite.py -v -o "$output_dir/$p${s}_benchmarks.csv" --exe "../../magma-build/release/clients/staging/rocsolver-bench" $s $p $c
+            python3 rocsolver-perfoptim-suite.py -v -o "$output_dir/$p${s}_benchmarks.csv" --exe "../../openblas-magma-build/release/clients/staging/rocsolver-bench" $s $p $c
         done
     done
 done

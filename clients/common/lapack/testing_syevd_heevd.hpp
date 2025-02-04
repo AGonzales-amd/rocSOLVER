@@ -788,9 +788,9 @@ void testing_magma_syevd_heevd(Arguments& argus)
     std::vector<T> A(argus.norm_check ? size_A : 0);
 
     /* query for workspace sizes */
-    MT aux_work[1];
-    S aux_rwork[1];
-    magma_int_t aux_iwork[1];
+    MT aux_work[1] = { 0 };
+    S aux_rwork[1] = { 0 };
+    magma_int_t aux_iwork[1] = { 0 };
     CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
                                        rocblas2magma_fill(uplo),
                                        n, NULL, lda, NULL, // A, w

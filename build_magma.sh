@@ -1,0 +1,1 @@
+./install.sh -ca gfx90a --build-path openblas-magma-build --cmake-arg -DMAGMA_PATH=/home/angonzal/software/magma-2.9.0 --cmake-arg -DROCSOLVER_FIND_PACKAGE_LAPACK_CONFIG=OFF --cmake-arg -DBLA_VENDOR=OpenBLAS
