@@ -188,6 +188,15 @@ def gesvd_suite(*, suite, precision, sizenormal, sizebatch):
         for s in size:
             row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'svect': vv, 'n': s}
             yield (row, s, f'-f {fn} -r {precision} --left_svect {v} --right_svect {v} -m {s} {common}')
+def magma_gesvd_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_gesvd'
+    size = sizenormal
+    for v in ['V', 'N']:
+        if v == 'V': vv = 'yes'
+        else: vv = 'no'
+        for s in size:
+            row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'svect': vv, 'n': s}
+            yield (row, s, f'-f {fn} -r {precision} --left_svect {v} --right_svect {v} -m {s} {common}')
 
 """
 GESVDJ tests are run, for the given precision and sizes, with vectors and without vectors
@@ -252,6 +261,22 @@ def potrfBatch_suite(*, suite, precision, sizenormal, sizebatch):
         yield (row, s, f'-f {fn} -r {precision} --batch_count {bc} -n {s} {common}')
 
 """
+GETRF tests are run with the given precision and sizes
+"""
+def magma_getrf_hybrid_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_getrf_hybrid'
+    size = sizenormal
+    for s in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
+        yield (row, s, f'-f {fn} -r {precision} -m {s} {common}')
+def magma_getrf_native_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_getrf_native'
+    size = sizenormal
+    for s in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
+        yield (row, s, f'-f {fn} -r {precision} -m {s} {common}')
+
+"""
 GEQRF tests are run, for the given precision and number of rows,
 with 160, 576, 1088, 2176, and 4352 columns and also for the square case (#rows = #columns)
 """
@@ -304,6 +329,9 @@ suites = {
   'magma_sytrd': magma_sytrd_hetrd_suite,
   'magma_sytrd2': magma_sytrd2_hetrd2_suite,
   'magma_stedx': magma_stedx_suite,
+  'magma_gesvd': magma_gesvd_suite,
+  'magma_getrf_hybrid': magma_getrf_hybrid_suite,
+  'magma_getrf_native': magma_getrf_native_suite,
 
 }
 
