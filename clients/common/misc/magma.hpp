@@ -89,6 +89,18 @@ inline magma_range_t rocblas2magma_erange(rocblas_erange erange)
     }
 }
 
+inline magma_vec_t rocblas2magma_svect(rocblas_svect svect)
+{
+    switch(svect)
+    {
+    case rocblas_svect_all: return MagmaAllVec;
+    case rocblas_svect_singular: return MagmaSomeVec;
+    case rocblas_svect_overwrite: return MagmaOverwriteVec;
+    case rocblas_svect_none: return MagmaNoVec;
+    default: throw std::invalid_argument("rocblas2magma_svect cannot convert value");
+    }
+}
+
 // namespace std
 // {
 // __host__ __device__ inline double real(const magmaDoubleComplex &x) { return ::real(x); }
@@ -685,4 +697,154 @@ inline magma_int_t magma_stedx(magma_range_t range,
                                magma_int_t* info)
 {
     return magma_zstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+}
+
+/* GESVD */
+inline magma_int_t magma_gesvd(magma_vec_t jobu,
+                               magma_vec_t jobvt,
+                               magma_int_t m,
+                               magma_int_t n,
+                               float* A,
+                               magma_int_t lda,
+                               float* s,
+                               float* U,
+                               magma_int_t ldu,
+                               float* VT,
+                               magma_int_t ldvt,
+                               float* work,
+                               magma_int_t lwork,
+                               float* rwork,
+                               magma_int_t* info)
+{
+    return magma_sgesvd(jobu, jobvt, m, n, A, lda, s, U, ldu, VT, ldvt, work, lwork, info);
+}
+
+inline magma_int_t magma_gesvd(magma_vec_t jobu,
+                               magma_vec_t jobvt,
+                               magma_int_t m,
+                               magma_int_t n,
+                               double* A,
+                               magma_int_t lda,
+                               double* s,
+                               double* U,
+                               magma_int_t ldu,
+                               double* VT,
+                               magma_int_t ldvt,
+                               double* work,
+                               magma_int_t lwork,
+                               double* rwork,
+                               magma_int_t* info)
+{
+    return magma_dgesvd(jobu, jobvt, m, n, A, lda, s, U, ldu, VT, ldvt, work, lwork, info);
+}
+
+inline magma_int_t magma_gesvd(magma_vec_t jobu,
+                               magma_vec_t jobvt,
+                               magma_int_t m,
+                               magma_int_t n,
+                               magmaFloatComplex* A,
+                               magma_int_t lda,
+                               float* s,
+                               magmaFloatComplex* U,
+                               magma_int_t ldu,
+                               magmaFloatComplex* VT,
+                               magma_int_t ldvt,
+                               magmaFloatComplex* work,
+                               magma_int_t lwork,
+                               float* rwork,
+                               magma_int_t* info)
+{
+    return magma_cgesvd(jobu, jobvt, m, n, A, lda, s, U, ldu, VT, ldvt, work, lwork, rwork, info);
+}
+
+inline magma_int_t magma_gesvd(magma_vec_t jobu,
+                               magma_vec_t jobvt,
+                               magma_int_t m,
+                               magma_int_t n,
+                               magmaDoubleComplex* A,
+                               magma_int_t lda,
+                               double* s,
+                               magmaDoubleComplex* U,
+                               magma_int_t ldu,
+                               magmaDoubleComplex* VT,
+                               magma_int_t ldvt,
+                               magmaDoubleComplex* work,
+                               magma_int_t lwork,
+                               double* rwork,
+                               magma_int_t* info)
+{
+    return magma_zgesvd(jobu, jobvt, m, n, A, lda, s, U, ldu, VT, ldvt, work, lwork, rwork, info);
+}
+
+/* GETRF */
+inline magma_int_t magma_getrf_gpu(
+    magma_int_t m, magma_int_t n,
+    magmaFloat_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_sgetrf_gpu(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_gpu(
+    magma_int_t m, magma_int_t n,
+    magmaDouble_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_dgetrf_gpu(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_gpu(
+    magma_int_t m, magma_int_t n,
+    magmaFloatComplex_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_cgetrf_gpu(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_gpu(
+    magma_int_t m, magma_int_t n,
+    magmaDoubleComplex_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_zgetrf_gpu(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_native(
+    magma_int_t m, magma_int_t n,
+    magmaFloat_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_sgetrf_native(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_native(
+    magma_int_t m, magma_int_t n,
+    magmaDouble_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_dgetrf_native(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_native(
+    magma_int_t m, magma_int_t n,
+    magmaFloatComplex_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_cgetrf_native(m, n, dA, ldda, ipiv, info);
+}
+
+inline magma_int_t magma_getrf_native(
+    magma_int_t m, magma_int_t n,
+    magmaDoubleComplex_ptr dA, magma_int_t ldda,
+    magma_int_t *ipiv,
+    magma_int_t *info )
+{
+    return magma_zgetrf_native(m, n, dA, ldda, ipiv, info);
 }

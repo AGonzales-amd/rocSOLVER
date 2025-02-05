@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <bool STRIDED, bool GETRF, typename I, typename Td, typename Id>
 void getf2_getrf_checkBadArgs(const rocblas_handle handle,
@@ -585,6 +586,132 @@ void testing_getf2_getrf(Arguments& argus)
 
     // ensure all arguments were consumed
     argus.validate_consumed();
+}
+
+template <magma_mode_t MODE, typename T>
+void testing_magma_getrf(Arguments& argus)
+{
+    using MT = rocblas2magma_type_t<T>;
+    using S = decltype(std::real(T{}));
+
+    // get arguments
+    rocblas_local_handle handle;
+    rocblas_int m = argus.get<rocblas_int>("m");
+    rocblas_int n = argus.get<rocblas_int>("n", m);
+    rocblas_int lda = argus.get<rocblas_int>("lda", m);
+
+    int hot_calls = argus.iters;
+
+    double gpu_time_used = 0, max_error = 0;
+
+    CHECK_MAGMA_ERROR(magma_init());
+    // magma_print_environment();
+
+    int device = 0;
+    CHECK_HIP_ERROR(hipGetDevice(&device));
+    magma_setdevice(device);
+
+    size_t size_A = size_t(lda) * n;
+    size_t size_P = size_t(min(m, n));
+    size_t size_ARes = (argus.unit_check || argus.norm_check || argus.hash_check) ? size_A : 0;
+
+    magma_int_t info, hinfo;
+    magma_int_t *infoaddr = &info;
+
+    // /* Initialize the matrix */
+    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
+    host_strided_batch_vector<T> hARes(size_ARes, 1, size_ARes, 1);
+    host_strided_batch_vector<rocblas_int> hIpiv(size_P, 1, size_P, 1);
+    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+
+    magma_int_t *wIpiv;
+    CHECK_MAGMA_ERROR(magma_malloc_cpu(&wIpiv, size_P));
+
+    if(argus.norm_check)
+    {
+        // input data initialization
+        getf2_getrf_initData<true, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+                                            hIpiv, argus.singular);
+
+        // execute computations
+        // GPU lapack
+        if(MODE == MagmaHybrid)
+            CHECK_MAGMA_ERROR(magma_getrf_gpu(m, n, (MT*)dA.data(), lda, wIpiv, &info));
+        else
+            CHECK_MAGMA_ERROR(magma_getrf_native(m, n, (MT*)dA.data(), lda, wIpiv, &info));
+        CHECK_HIP_ERROR(hARes.transfer_from(dA));
+
+        // CPU lapack
+            cpu_getrf(m, n, hA[0], lda, hIpiv[0], &hinfo);
+
+        // expecting original matrix to be non-singular
+        // error is ||hA - hARes|| / ||hA|| (ideally ||LU - Lres Ures|| / ||LU||)
+        // (THIS DOES NOT ACCOUNT FOR NUMERICAL REPRODUCIBILITY ISSUES.
+        // IT MIGHT BE REVISITED IN THE FUTURE)
+        // using frobenius norm
+        double err;
+        max_error = 0;
+
+        err = norm_error('F', m, n, lda, hA[0], hARes[0]);
+        max_error = err > max_error ? err : max_error;
+
+        // also check pivoting (count the number of incorrect pivots)
+        err = 0;
+        for(rocblas_int i = 0; i < min(m, n); ++i)
+        {
+            EXPECT_EQ(hIpiv[0][i], wIpiv[i]) << ", i = " << i;
+            if(hIpiv[0][i] != wIpiv[i])
+                err++;
+        }
+        max_error = err > max_error ? err : max_error;
+
+        // also check info for singularities
+        err = 0;
+        EXPECT_EQ(hinfo, info);
+        if(hinfo != info)
+            err++;
+        max_error += err;
+
+        ROCSOLVER_TEST_CHECK(T, max_error, min(m, n));
+    }
+
+    getf2_getrf_initData<true, false, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+                                         hIpiv, argus.singular);
+    
+    // cold calls
+    for(int iter = 0; iter < 2; iter++)
+    {
+        getf2_getrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+                                            hIpiv, argus.singular);
+
+        if(MODE == MagmaHybrid)
+            magma_getrf_gpu(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+        else
+            magma_getrf_native(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+    }
+
+    for(rocblas_int iter = 0; iter < hot_calls; iter++)
+    {
+        getf2_getrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+                                            hIpiv, argus.singular);
+
+        double start = magma_wtime() * 1e6;
+        if(MODE == MagmaHybrid)
+            magma_getrf_gpu(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+        else
+            magma_getrf_native(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+        gpu_time_used += (magma_wtime() * 1e6) - start;
+    }
+    gpu_time_used /= hot_calls;
+
+    CHECK_MAGMA_ERROR(magma_free_cpu(wIpiv));
+
+    CHECK_MAGMA_ERROR(magma_finalize());
+
+    if(argus.norm_check)
+        rocsolver_bench_output(gpu_time_used, max_error, n*get_epsilon<T>());
+    else
+        rocsolver_bench_output(gpu_time_used);
 }
 
 #define EXTERN_TESTING_GETF2_GETRF(...) \

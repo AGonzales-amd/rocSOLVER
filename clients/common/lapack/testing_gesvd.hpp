@@ -34,6 +34,7 @@
 #include "common/misc/rocsolver.hpp"
 #include "common/misc/rocsolver_arguments.hpp"
 #include "common/misc/rocsolver_test.hpp"
+#include "common/misc/magma.hpp"
 
 template <bool STRIDED, typename T, typename TT, typename W, typename U>
 void gesvd_checkBadArgs(const rocblas_handle handle,
@@ -993,7 +994,6 @@ void testing_magma_gesvd(Arguments& argus)
     {
         size_VT = size_t(ldvT) * nT;
         size_UT = size_t(lduT) * mT;
-        size_Sres = size_S;
     }
 
     magma_int_t info;
@@ -1005,13 +1005,7 @@ void testing_magma_gesvd(Arguments& argus)
     host_strided_batch_vector<T> hV(size_V, 1, size_V, 1);
     host_strided_batch_vector<T> hU(size_U, 1, size_U, 1);
     host_strided_batch_vector<rocblas_int> hinfo(1, 1, 1, 1);
-    // device
-    device_strided_batch_vector<S> dS(size_S, 1, stS, bc);
-    device_strided_batch_vector<T> dV(size_V, 1, stV, bc);
-    device_strided_batch_vector<T> dU(size_U, 1, stU, bc);
-    device_strided_batch_vector<rocblas_int> dinfo(1, 1, 1, bc);
-    device_strided_batch_vector<T> dVT(size_VT, 1, stVT, bc);
-    device_strided_batch_vector<T> dUT(size_UT, 1, stUT, bc);
+    device_strided_batch_vector<T> dummy(0, 0, 0, 0);
 
     S* wS;
     MT *wA, *wV, *wU, *wVT, *wUT;
@@ -1029,7 +1023,7 @@ void testing_magma_gesvd(Arguments& argus)
     magma_gesvd(rocblas2magma_svect(leftv),
                 rocblas2magma_svect(rightv),
                 m, n, NULL, lda, NULL,
-                NULL, ldu, NULL, ldv
+                NULL, ldu, NULL, ldv,
                 aux_work, -1,
                 NULL, &info);
     magma_int_t lwork = magma_int_t(real(aux_work[0]));
@@ -1041,127 +1035,170 @@ void testing_magma_gesvd(Arguments& argus)
     CHECK_MAGMA_ERROR(magma_malloc_cpu(&rwork, lrwork));
     CHECK_MAGMA_ERROR(magma_malloc_pinned(&work, lwork));
 
-    if(argus.norm_check)
-    {
-        constexpr bool COMPLEX = rocblas_is_complex<T>;
-        int sizeE, cpu_lwork;
-        if(!COMPLEX)
-        {
-            sizeE = (evect == rocblas_evect_none ? 2 * n + 1 : 1 + 6 * n + 2 * n * n);
-            cpu_lwork = 0;
-        }
-        else
-        {
-            sizeE = (evect == rocblas_evect_none ? n : 1 + 5 * n + 2 * n * n);
-            cpu_lwork = (evect == rocblas_evect_none ? n + 1 : 2 * n + n * n);
-        }
-        int cpu_liwork = (evect == rocblas_evect_none ? 1 : 3 + 5 * n);
-
-        std::vector<T> cpu_work(cpu_lwork);
-        std::vector<S> hE(sizeE);
-        std::vector<int> cpu_iwork(cpu_liwork);
-
-        syevd_heevd_initData<true, true, T>(handle, evect, n, dA, lda, 1, hA, A, argus.norm_check);
-
-        // execute computations
-        // GPU lapack
-        CHECK_MAGMA_ERROR(magma_syevd_heevd_gpu(rocblas2magma_evect(evect),
-                                        rocblas2magma_fill(uplo),
-                                        n, (MT*)dA.data(), lda, w.data(),
-                                        w_A, lda,
-                                        work, lwork,
-                                        rwork, lrwork,
-                                        iwork, liwork,
-                                        &info));
-
-        
-        host_strided_batch_vector<T> hAres(size_A, 1, size_A, 1);
-        if(evect == rocblas_evect_original)
-            CHECK_HIP_ERROR(hAres.transfer_from(dA));
-
-        // CPU lapack
-        host_strided_batch_vector<S> hD(n, 1, n, 1);
-        rocblas_int hinfo;
-        cpu_syevd_heevd(evect, uplo, n, hA.data(), lda, hD.data(), cpu_work.data(), cpu_lwork, hE.data(), sizeE,
-                        cpu_iwork.data(), cpu_liwork, &hinfo);
-
-        // Check info for non-convergence
-        max_error = 0;
-        EXPECT_EQ(hinfo, info);
-        if(hinfo != info)
-            max_error += 1;
-
-        double err = 0;
-        if(evect != rocblas_evect_original)
-        {
-            // only eigenvalues needed; can compare with LAPACK
-
-            // error is ||hD - hDRes|| / ||hD||
-            // using frobenius norm
-            if(hinfo == 0)
-                err = norm_error('F', 1, n, 1, hD.data(), w.data());
-            max_error = err > max_error ? err : max_error;
-        }
-        else
-        {
-            // both eigenvalues and eigenvectors needed; need to implicitly test
-            // eigenvectors due to non-uniqueness of eigenvectors under scaling
-            if(hinfo == 0)
-            {
-                // multiply A with each of the n eigenvectors and divide by corresponding
-                // eigenvalues
-                T alpha;
-                T beta = 0;
-                for(int j = 0; j < n; j++)
-                {
-                    alpha = T(1) / w[0][j];
-                    cpu_symv_hemv(uplo, n, alpha, A.data(), lda, hAres.data() + j * lda,
-                                1, beta, hA.data() + j * lda, 1);
-                }
-
-                // error is ||hA - hARes|| / ||hA||
-                // using frobenius norm
-                err = norm_error('F', n, n, lda, hA.data(), hAres.data());
-                max_error = err > max_error ? err : max_error;
-            }
-        }
-
-        ROCSOLVER_TEST_CHECK(T, max_error, n);
-    }
-
     auto copy_mat = [](auto m, auto n, auto src, auto lds, auto dst, auto ldd){
+        using D = std::decay_t<decltype(*dst)>;
+
         for(size_t j = 0; j < n; j++){
             for(size_t i = 0; i < m; i++){
-                dst[i + j * ldd] = src[i + j * lds];
+                dst[i + j * ldd] = ((D*)src)[i + j * lds];
             }
         }
     };
 
-    gesvd_initData<true, false, T>(handle, leftv, rightv, m, n, nullptr, lda, 1, hA, A, false,
+    if(argus.norm_check)
+    {
+        rocblas_int cpu_lwork = 5 * std::max(m, n);
+        rocblas_int cpu_lrwork = (rocblas_is_complex<T> ? 5 * std::min(m, n) : 0);
+        std::vector<T> cpu_work(cpu_lwork);
+        std::vector<S> cpu_rwork(cpu_lrwork);
+        std::vector<T> A(lda * n);
+
+        rocblas_int ldures, ldvres;
+        T *Ures, *Vres;
+
+        // input data initialization
+        gesvd_initData<true, false, T>(handle, leftv, rightv, m, n, dummy, lda, 1, hA, A, true,
+                                    argus.singular);
+        copy_mat(m, n, hA[0], lda, wA, lda);
+
+
+        // execute computations:
+        CHECK_MAGMA_ERROR(magma_gesvd(rocblas2magma_svect(leftvT),
+                    rocblas2magma_svect(rightvT),
+                    mT, nT, wA, lda, wS,
+                    wUT, lduT, wVT, ldvT,
+                    work, lwork,
+                    rwork, &info));
+
+        if(leftv == rocblas_svect_none && rightv != rocblas_svect_none)
+        {
+            // CHECK_HIP_ERROR(Ures.transfer_from(dUT));
+            Ures = (T*)wUT;
+            ldures = lduT;
+        }
+        if(rightv == rocblas_svect_none && leftv != rocblas_svect_none)
+        {
+            // CHECK_HIP_ERROR(Vres.transfer_from(dVT));
+            Vres = (T*)wVT;
+            ldvres = ldvT;
+        }
+
+        copy_mat(m, n, hA[0], lda, wA, lda);
+
+        // CPU lapack
+        cpu_gesvd(rocblas_svect_none, rocblas_svect_none, m, n, hA[0], lda, hS[0], hU[0], ldu,
+                hV[0], ldv, cpu_work.data(), cpu_lwork, cpu_rwork.data(), hinfo[0]);
+
+        // GPU lapack
+        // CHECK_ROCBLAS_ERROR(rocsolver_gesvd(STRIDED, handle, left_svect, right_svect, m, n, dA.data(),
+        //                                     lda, stA, dS.data(), stS, dU.data(), ldu, stU, dV.data(),
+        //                                     ldv, stV, dE.data(), stE, fa, dinfo.data(), bc));
+        CHECK_MAGMA_ERROR(magma_gesvd(rocblas2magma_svect(leftv),
+                    rocblas2magma_svect(rightv),
+                    m, n, wA, lda, wS,
+                    wU, ldu, wV, ldv,
+                    work, lwork,
+                    rwork, &info));
+
+        if(leftv == rocblas_svect_singular || leftv == rocblas_svect_all)
+        {
+            // CHECK_HIP_ERROR(Ures.transfer_from(dU));
+            Ures = (T*)wU;
+            ldures = ldu;
+        }
+        if(rightv == rocblas_svect_singular || rightv == rocblas_svect_all)
+        {
+            // CHECK_HIP_ERROR(Vres.transfer_from(dV));
+            Vres = (T*)wV;
+            ldvres = ldv;
+        }
+
+        if(leftv == rocblas_svect_overwrite)
+        {
+            // CHECK_HIP_ERROR(hA.transfer_from(dA));
+            for(rocblas_int i = 0; i < m; i++)
+            {
+                for(rocblas_int j = 0; j < std::min(m, n); j++)
+                    Ures[i + j * ldures] = ((T*)wA)[i + j * lda];
+            }
+        }
+        if(rightv == rocblas_svect_overwrite)
+        {
+            // CHECK_HIP_ERROR(hA.transfer_from(dA));
+            for(rocblas_int i = 0; i < std::min(m, n); i++)
+            {
+                for(rocblas_int j = 0; j < n; j++)
+                    Vres[i + j * ldvres] = ((T*)wA)[i + j * lda];
+            }
+        }
+
+        // Check info for non-convergence
+        max_error = 0;
+        EXPECT_EQ(hinfo[0][0], info);
+        if(hinfo[0][0] != info)
+            max_error += 1;
+
+        // (We expect the used input matrices to always converge. Testing
+        // implicitly the equivalent non-converged matrix is very complicated and it boils
+        // down to essentially run the algorithm again and until convergence is achieved).
+
+        double err;
+        max_errorv = 0;
+
+        // error is ||hS - hSres||
+        err = norm_error('F', 1, std::min(m, n), 1, hS[0], wS);
+        max_error = err > max_error ? err : max_error;
+
+        // Check the singular vectors if required
+        if(hinfo[0][0] == 0 && (leftv != rocblas_svect_none || rightv != rocblas_svect_none))
+        {
+            err = 0;
+            // check singular vectors implicitly (A*v_k = s_k*u_k)
+            for(rocblas_int k = 0; k < std::min(m, n); ++k)
+            {
+                for(rocblas_int i = 0; i < m; ++i)
+                {
+                    T tmp = 0;
+                    for(rocblas_int j = 0; j < n; ++j)
+                        tmp += A[i + j * lda] * sconj(Vres[k + j * ldvres]);
+                    tmp -= wS[k] * Ures[i + k * ldures];
+                    err += std::abs(tmp) * std::abs(tmp);
+                }
+            }
+            err = std::sqrt(err) / double(snorm('F', m, n, A.data(), lda));
+            max_errorv = err > max_errorv ? err : max_errorv;
+        }
+
+        ROCSOLVER_TEST_CHECK(T, max_error, 2 * std::min(m, n));
+        if(svects)
+            ROCSOLVER_TEST_CHECK(T, max_errorv, 2 * std::min(m, n));
+    }
+
+    gesvd_initData<true, false, T>(handle, leftv, rightv, m, n, dummy, lda, 1, hA, A, false,
                                    argus.singular);
     
     // cold calls
     for(int iter = 0; iter < 2; iter++)
     {
-        copy_mat(m, n, hA[0], lda, wA[0], lda);
+        copy_mat(m, n, hA[0], lda, wA, lda);
 
         magma_gesvd(rocblas2magma_svect(leftv),
                     rocblas2magma_svect(rightv),
                     m, n, wA, lda, wS,
-                    wU, ldu, wV, ldv
+                    wU, ldu, wV, ldv,
                     work, lwork,
                     rwork, &info);
     }
 
     for(rocblas_int iter = 0; iter < hot_calls; iter++)
     {
-        copy_mat(m, n, hA[0], lda, wA[0], lda);
+        copy_mat(m, n, hA[0], lda, wA, lda);
 
         double start = magma_wtime() * 1e6;
         magma_gesvd(rocblas2magma_svect(leftv),
                     rocblas2magma_svect(rightv),
                     m, n, wA, lda, wS,
-                    wU, ldu, wV, ldv
+                    wU, ldu, wV, ldv,
                     work, lwork,
                     rwork, &info);
         gpu_time_used += (magma_wtime() * 1e6) - start;

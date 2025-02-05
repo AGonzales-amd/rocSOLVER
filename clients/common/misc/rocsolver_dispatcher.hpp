@@ -196,6 +196,8 @@ class rocsolver_dispatcher
             {"getf2", testing_getf2_getrf<false, false, 0, T, rocblas_int>},
             {"getf2_batched", testing_getf2_getrf<true, true, 0, T, rocblas_int>},
             {"getf2_strided_batched", testing_getf2_getrf<false, true, 0, T, rocblas_int>},
+            {"magma_getrf_hybrid", testing_magma_getrf<MagmaHybrid, T>},
+            {"magma_getrf_native", testing_magma_getrf<MagmaNative, T>},
             {"getrf", testing_getf2_getrf<false, false, 1, T, rocblas_int>},
             {"getrf_batched", testing_getf2_getrf<true, true, 1, T, rocblas_int>},
             {"getrf_strided_batched", testing_getf2_getrf<false, true, 1, T, rocblas_int>},
@@ -251,6 +253,7 @@ class rocsolver_dispatcher
             {"gesv_batched", testing_gesv<true, true, T>},
             {"gesv_strided_batched", testing_gesv<false, true, T>},
             // gesvd
+            {"magma_gesvd", testing_magma_gesvd<T>},
             {"gesvd", testing_gesvd<false, false, T>},
             {"gesvd_batched", testing_gesvd<true, true, T>},
             {"gesvd_strided_batched", testing_gesvd<false, true, T>},
