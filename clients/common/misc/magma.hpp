@@ -1,8 +1,8 @@
 #pragma once
 
+#include "magma_lapack.hpp"
 #include "magma_operators.h"
 #include "magma_v2.h"
-#include "magma_lapack.hpp"
 #include <rocblas/rocblas.h>
 #include <rocsolver/rocsolver.h>
 
@@ -440,6 +440,42 @@ inline magma_int_t magma_potrf_native(magma_uplo_t uplo,
     return magma_zpotrf_native(uplo, n, dA, ldda, info);
 }
 
+inline magma_int_t magma_potrf_batched(
+    magma_uplo_t uplo, magma_int_t n,
+    float **dA_array, magma_int_t ldda,
+    magma_int_t *info_array,  magma_int_t batchCount, 
+    magma_queue_t queue)
+{
+    return magma_spotrf_batched(uplo, n, dA_array, ldda, info_array, batchCount, queue);
+}
+
+inline magma_int_t magma_potrf_batched(
+    magma_uplo_t uplo, magma_int_t n,
+    double **dA_array, magma_int_t ldda,
+    magma_int_t *info_array,  magma_int_t batchCount, 
+    magma_queue_t queue)
+{
+    return magma_dpotrf_batched(uplo, n, dA_array, ldda, info_array, batchCount, queue);
+}
+
+inline magma_int_t magma_potrf_batched(
+    magma_uplo_t uplo, magma_int_t n,
+    magmaFloatComplex **dA_array, magma_int_t ldda,
+    magma_int_t *info_array,  magma_int_t batchCount, 
+    magma_queue_t queue)
+{
+    return magma_cpotrf_batched(uplo, n, dA_array, ldda, info_array, batchCount, queue);
+}
+
+inline magma_int_t magma_potrf_batched(
+    magma_uplo_t uplo, magma_int_t n,
+    magmaDoubleComplex **dA_array, magma_int_t ldda,
+    magma_int_t *info_array,  magma_int_t batchCount, 
+    magma_queue_t queue)
+{
+    return magma_zpotrf_batched(uplo, n, dA_array, ldda, info_array, batchCount, queue);
+}
+
 /* GEQRF */
 inline magma_int_t magma_geqrf2_gpu(magma_int_t m,
                                     magma_int_t n,
@@ -636,7 +672,8 @@ inline magma_int_t magma_stedx(magma_range_t range,
                                magmaFloat_ptr dwork,
                                magma_int_t* info)
 {
-    return magma_sstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+    return magma_sstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork,
+                        info);
 }
 
 inline magma_int_t magma_stedx(magma_range_t range,
@@ -656,7 +693,8 @@ inline magma_int_t magma_stedx(magma_range_t range,
                                magmaDouble_ptr dwork,
                                magma_int_t* info)
 {
-    return magma_dstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+    return magma_dstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork,
+                        info);
 }
 
 inline magma_int_t magma_stedx(magma_range_t range,
@@ -676,7 +714,8 @@ inline magma_int_t magma_stedx(magma_range_t range,
                                magmaFloat_ptr dwork,
                                magma_int_t* info)
 {
-    return magma_cstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+    return magma_cstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork,
+                        info);
 }
 
 inline magma_int_t magma_stedx(magma_range_t range,
@@ -696,7 +735,8 @@ inline magma_int_t magma_stedx(magma_range_t range,
                                magmaDouble_ptr dwork,
                                magma_int_t* info)
 {
-    return magma_zstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork, info);
+    return magma_zstedx(range, n, vl, vu, il, iu, d, e, Z, ldz, rwork, lrwork, iwork, liwork, dwork,
+                        info);
 }
 
 /* GESVD */
@@ -777,74 +817,130 @@ inline magma_int_t magma_gesvd(magma_vec_t jobu,
 }
 
 /* GETRF */
-inline magma_int_t magma_getrf_gpu(
-    magma_int_t m, magma_int_t n,
-    magmaFloat_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_gpu(magma_int_t m,
+                                   magma_int_t n,
+                                   magmaFloat_ptr dA,
+                                   magma_int_t ldda,
+                                   magma_int_t* ipiv,
+                                   magma_int_t* info)
 {
     return magma_sgetrf_gpu(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_gpu(
-    magma_int_t m, magma_int_t n,
-    magmaDouble_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_gpu(magma_int_t m,
+                                   magma_int_t n,
+                                   magmaDouble_ptr dA,
+                                   magma_int_t ldda,
+                                   magma_int_t* ipiv,
+                                   magma_int_t* info)
 {
     return magma_dgetrf_gpu(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_gpu(
-    magma_int_t m, magma_int_t n,
-    magmaFloatComplex_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_gpu(magma_int_t m,
+                                   magma_int_t n,
+                                   magmaFloatComplex_ptr dA,
+                                   magma_int_t ldda,
+                                   magma_int_t* ipiv,
+                                   magma_int_t* info)
 {
     return magma_cgetrf_gpu(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_gpu(
-    magma_int_t m, magma_int_t n,
-    magmaDoubleComplex_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_gpu(magma_int_t m,
+                                   magma_int_t n,
+                                   magmaDoubleComplex_ptr dA,
+                                   magma_int_t ldda,
+                                   magma_int_t* ipiv,
+                                   magma_int_t* info)
 {
     return magma_zgetrf_gpu(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_native(
-    magma_int_t m, magma_int_t n,
-    magmaFloat_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_native(magma_int_t m,
+                                      magma_int_t n,
+                                      magmaFloat_ptr dA,
+                                      magma_int_t ldda,
+                                      magma_int_t* ipiv,
+                                      magma_int_t* info)
 {
     return magma_sgetrf_native(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_native(
-    magma_int_t m, magma_int_t n,
-    magmaDouble_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_native(magma_int_t m,
+                                      magma_int_t n,
+                                      magmaDouble_ptr dA,
+                                      magma_int_t ldda,
+                                      magma_int_t* ipiv,
+                                      magma_int_t* info)
 {
     return magma_dgetrf_native(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_native(
-    magma_int_t m, magma_int_t n,
-    magmaFloatComplex_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_native(magma_int_t m,
+                                      magma_int_t n,
+                                      magmaFloatComplex_ptr dA,
+                                      magma_int_t ldda,
+                                      magma_int_t* ipiv,
+                                      magma_int_t* info)
 {
     return magma_cgetrf_native(m, n, dA, ldda, ipiv, info);
 }
 
-inline magma_int_t magma_getrf_native(
-    magma_int_t m, magma_int_t n,
-    magmaDoubleComplex_ptr dA, magma_int_t ldda,
-    magma_int_t *ipiv,
-    magma_int_t *info )
+inline magma_int_t magma_getrf_native(magma_int_t m,
+                                      magma_int_t n,
+                                      magmaDoubleComplex_ptr dA,
+                                      magma_int_t ldda,
+                                      magma_int_t* ipiv,
+                                      magma_int_t* info)
 {
     return magma_zgetrf_native(m, n, dA, ldda, ipiv, info);
 }
+
+inline magma_int_t magma_getrf_batched(magma_int_t m,
+                                       magma_int_t n,
+                                       float** dA_array,
+                                       magma_int_t ldda,
+                                       magma_int_t** ipiv_array,
+                                       magma_int_t* info_array,
+                                       magma_int_t batchCount,
+                                       magma_queue_t queue)
+{
+    return magma_sgetrf_batched(m, n, dA_array, ldda, ipiv_array, info_array, batchCount, queue);
+};
+
+inline magma_int_t magma_getrf_batched(magma_int_t m,
+                                       magma_int_t n,
+                                       double** dA_array,
+                                       magma_int_t ldda,
+                                       magma_int_t** ipiv_array,
+                                       magma_int_t* info_array,
+                                       magma_int_t batchCount,
+                                       magma_queue_t queue)
+{
+    return magma_dgetrf_batched(m, n, dA_array, ldda, ipiv_array, info_array, batchCount, queue);
+};
+
+inline magma_int_t magma_getrf_batched(magma_int_t m,
+                                       magma_int_t n,
+                                       magmaFloatComplex** dA_array,
+                                       magma_int_t ldda,
+                                       magma_int_t** ipiv_array,
+                                       magma_int_t* info_array,
+                                       magma_int_t batchCount,
+                                       magma_queue_t queue)
+{
+    return magma_cgetrf_batched(m, n, dA_array, ldda, ipiv_array, info_array, batchCount, queue);
+};
+
+inline magma_int_t magma_getrf_batched(magma_int_t m,
+                                       magma_int_t n,
+                                       magmaDoubleComplex** dA_array,
+                                       magma_int_t ldda,
+                                       magma_int_t** ipiv_array,
+                                       magma_int_t* info_array,
+                                       magma_int_t batchCount,
+                                       magma_queue_t queue)
+{
+    return magma_zgetrf_batched(m, n, dA_array, ldda, ipiv_array, info_array, batchCount, queue);
+};

@@ -259,6 +259,13 @@ def potrfBatch_suite(*, suite, precision, sizenormal, sizebatch):
     for s, bc in size:
         row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'batch_count': bc, 'n': s}
         yield (row, s, f'-f {fn} -r {precision} --batch_count {bc} -n {s} {common}')
+def magma_potrfBatch_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_potrf_batched'
+    size = sizebatch
+    for s, bc in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'batch_count': bc, 'n': s}
+        # magma potrf batched currently only supports Lower Fill
+        yield (row, s, f'-f {fn} -r {precision} --batch_count {bc} -n {s} --uplo L {common}')
 
 """
 GETRF tests are run with the given precision and sizes
@@ -275,6 +282,15 @@ def magma_getrf_native_suite(*, suite, precision, sizenormal, sizebatch):
     for s in size:
         row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
         yield (row, s, f'-f {fn} -r {precision} -m {s} {common}')
+"""
+GETRFBATCH tests are run with the given precision and sizes
+"""
+def mamga_getrfBatch_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_getrf_batched'
+    size = sizebatch
+    for s, bc in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'batch_count': bc, 'n': s}
+        yield (row, s, f'-f {fn} -r {precision} --batch_count {bc} -m {s} {common}')
 
 """
 GEQRF tests are run, for the given precision and number of rows,
@@ -332,6 +348,8 @@ suites = {
   'magma_gesvd': magma_gesvd_suite,
   'magma_getrf_hybrid': magma_getrf_hybrid_suite,
   'magma_getrf_native': magma_getrf_native_suite,
+  'magma_getrfBatch': mamga_getrfBatch_suite,
+  'magma_potrfBatch': magma_potrfBatch_suite,
 
 }
 

@@ -588,7 +588,7 @@ void testing_getf2_getrf(Arguments& argus)
     argus.validate_consumed();
 }
 
-template <magma_mode_t MODE, typename T>
+template <bool BATCHED, magma_mode_t MODE, typename T>
 void testing_magma_getrf(Arguments& argus)
 {
     using MT = rocblas2magma_type_t<T>;
@@ -600,6 +600,7 @@ void testing_magma_getrf(Arguments& argus)
     rocblas_int n = argus.get<rocblas_int>("n", m);
     rocblas_int lda = argus.get<rocblas_int>("lda", m);
 
+    rocblas_int bc = argus.batch_count;
     int hot_calls = argus.iters;
 
     double gpu_time_used = 0, max_error = 0;
@@ -611,38 +612,74 @@ void testing_magma_getrf(Arguments& argus)
     CHECK_HIP_ERROR(hipGetDevice(&device));
     magma_setdevice(device);
 
+    magma_queue_t queue;
+    magma_queue_create(device, &queue);
+
     size_t size_A = size_t(lda) * n;
     size_t size_P = size_t(min(m, n));
+    size_t size_dP = BATCHED ? size_P : 0;
+    size_t size_dInfo = BATCHED ? 1 : 0;
     size_t size_ARes = (argus.unit_check || argus.norm_check || argus.hash_check) ? size_A : 0;
-
-    magma_int_t info, hinfo;
-    magma_int_t *infoaddr = &info;
+    size_t size_PRes = (argus.unit_check || argus.norm_check || argus.hash_check) ? size_P : 0;
+    size_t size_infoRes = (argus.unit_check || argus.norm_check || argus.hash_check) ? 1 : 0;
 
     // /* Initialize the matrix */
-    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
-    host_strided_batch_vector<T> hARes(size_ARes, 1, size_ARes, 1);
-    host_strided_batch_vector<rocblas_int> hIpiv(size_P, 1, size_P, 1);
-    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+    host_batch_vector<T> hA(size_A, 1, bc);
+    host_batch_vector<rocblas_int> hIpiv(size_P, 1, bc);
+    host_strided_batch_vector<rocblas_int> hInfo(1, 1, 1, bc);
+
+    device_batch_vector<T> dA(size_A, 1, bc);
+    device_batch_vector<magma_int_t> dIpiv(size_dP, 1, bc);
+    device_strided_batch_vector<magma_int_t> dInfo(size_dInfo, 1, 1, bc);
+
+    host_batch_vector<T> hARes(size_ARes, 1, bc);
+    host_batch_vector<magma_int_t> hIpivRes(size_PRes, 1, bc);
+    host_strided_batch_vector<magma_int_t> hInfoRes(size_infoRes, 1, 1, bc);
 
     magma_int_t *wIpiv;
-    CHECK_MAGMA_ERROR(magma_malloc_cpu(&wIpiv, size_P));
+    if(!BATCHED)
+        CHECK_MAGMA_ERROR(magma_malloc_cpu(&wIpiv, size_P));
 
     if(argus.norm_check)
     {
         // input data initialization
-        getf2_getrf_initData<true, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+        getf2_getrf_initData<true, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, wIpiv, bc, hA,
                                             hIpiv, argus.singular);
 
         // execute computations
         // GPU lapack
-        if(MODE == MagmaHybrid)
-            CHECK_MAGMA_ERROR(magma_getrf_gpu(m, n, (MT*)dA.data(), lda, wIpiv, &info));
+        if(BATCHED)
+        {
+            CHECK_MAGMA_ERROR(magma_getrf_batched(m, n, (MT**)dA.ptr_on_device(), lda, dIpiv.ptr_on_device(),  dInfo.data(), bc, queue));
+        }
         else
-            CHECK_MAGMA_ERROR(magma_getrf_native(m, n, (MT*)dA.data(), lda, wIpiv, &info));
+        {
+            if(MODE == MagmaHybrid)
+                CHECK_MAGMA_ERROR(magma_getrf_gpu(m, n, (MT*)dA[0], lda, wIpiv, hInfoRes[0]));
+            else
+                CHECK_MAGMA_ERROR(magma_getrf_native(m, n, (MT*)dA[0], lda, wIpiv, hInfoRes[0]));
+        }
         CHECK_HIP_ERROR(hARes.transfer_from(dA));
 
         // CPU lapack
-            cpu_getrf(m, n, hA[0], lda, hIpiv[0], &hinfo);
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            cpu_getrf(m, n, hA[b], lda, hIpiv[b], hInfo[b]);
+        }
+
+        // copy ipiv results
+        if(BATCHED)
+        {
+            CHECK_HIP_ERROR(hIpivRes.transfer_from(dIpiv));
+            CHECK_HIP_ERROR(hInfoRes.transfer_from(dInfo));
+        }
+        else
+        {
+            for(rocblas_int i = 0; i < size_P; ++i)
+            {
+                hIpivRes[0][i] = wIpiv[i];
+            }
+        }
 
         // expecting original matrix to be non-singular
         // error is ||hA - hARes|| / ||hA|| (ideally ||LU - Lres Ures|| / ||LU||)
@@ -651,61 +688,85 @@ void testing_magma_getrf(Arguments& argus)
         // using frobenius norm
         double err;
         max_error = 0;
-
-        err = norm_error('F', m, n, lda, hA[0], hARes[0]);
-        max_error = err > max_error ? err : max_error;
-
-        // also check pivoting (count the number of incorrect pivots)
-        err = 0;
-        for(rocblas_int i = 0; i < min(m, n); ++i)
+        for(rocblas_int b = 0; b < bc; ++b)
         {
-            EXPECT_EQ(hIpiv[0][i], wIpiv[i]) << ", i = " << i;
-            if(hIpiv[0][i] != wIpiv[i])
-                err++;
+            err = norm_error('F', m, n, lda, hA[b], hARes[b]);
+            max_error = err > max_error ? err : max_error;
+
+            // also check pivoting (count the number of incorrect pivots)
+            err = 0;
+            for(rocblas_int i = 0; i < min(m, n); ++i)
+            {
+                EXPECT_EQ(hIpiv[b][i], hIpivRes[b][i]) << "where b = " << b << ", i = " << i;
+                if(hIpiv[b][i] != hIpivRes[b][i])
+                    err++;
+            }
+            max_error = err > max_error ? err : max_error;
         }
-        max_error = err > max_error ? err : max_error;
 
         // also check info for singularities
         err = 0;
-        EXPECT_EQ(hinfo, info);
-        if(hinfo != info)
-            err++;
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            EXPECT_EQ(hInfo[b][0], hInfoRes[b][0]) << "where b = " << b;
+            if(hInfo[b][0] != hInfoRes[b][0])
+                err++;
+        }
         max_error += err;
 
         ROCSOLVER_TEST_CHECK(T, max_error, min(m, n));
     }
 
-    getf2_getrf_initData<true, false, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+    getf2_getrf_initData<true, false, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, wIpiv, bc, hA,
                                          hIpiv, argus.singular);
     
     // cold calls
     for(int iter = 0; iter < 2; iter++)
     {
-        getf2_getrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+        getf2_getrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, wIpiv, bc, hA,
                                             hIpiv, argus.singular);
 
-        if(MODE == MagmaHybrid)
-            magma_getrf_gpu(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+        if(BATCHED)
+        {
+            magma_getrf_batched(m, n, (MT**)dA.ptr_on_device(), lda, dIpiv.ptr_on_device(),  dInfo.data(), bc, queue);
+        }
         else
-            magma_getrf_native(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+        {
+            if(MODE == MagmaHybrid)
+                magma_getrf_gpu(m, n, (MT*)dA[0], lda, wIpiv, hInfoRes[0]);
+            else
+                magma_getrf_native(m, n, (MT*)dA[0], lda, wIpiv, hInfoRes[0]);
+        }
     }
 
     for(rocblas_int iter = 0; iter < hot_calls; iter++)
     {
-        getf2_getrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, infoaddr, 1, hA,
+        getf2_getrf_initData<false, true, T>(handle, m, n, dA, lda, size_A, wIpiv, size_P, wIpiv, bc, hA,
                                             hIpiv, argus.singular);
-
-        double start = magma_wtime() * 1e6;
-        if(MODE == MagmaHybrid)
-            magma_getrf_gpu(m, n, (MT*)dA.data(), lda, wIpiv, &info);
+        
+        double start;
+        if(BATCHED)
+        {
+            start = magma_sync_wtime(queue) * 1e6;
+            magma_getrf_batched(m, n, (MT**)dA.ptr_on_device(), lda, dIpiv.ptr_on_device(),  dInfo.data(), bc, queue);
+            gpu_time_used += (magma_sync_wtime(queue) * 1e6) - start;
+        }
         else
-            magma_getrf_native(m, n, (MT*)dA.data(), lda, wIpiv, &info);
-        gpu_time_used += (magma_wtime() * 1e6) - start;
+        {
+            start = magma_wtime() * 1e6;
+            if(MODE == MagmaHybrid)
+                magma_getrf_gpu(m, n, (MT*)dA[0], lda, wIpiv, hInfoRes[0]);
+            else
+                magma_getrf_native(m, n, (MT*)dA[0], lda, wIpiv, hInfoRes[0]);
+            gpu_time_used += (magma_wtime() * 1e6) - start;
+        }
     }
     gpu_time_used /= hot_calls;
 
-    CHECK_MAGMA_ERROR(magma_free_cpu(wIpiv));
+    if(!BATCHED)
+        CHECK_MAGMA_ERROR(magma_free_cpu(wIpiv));
 
+    magma_queue_destroy(queue);
     CHECK_MAGMA_ERROR(magma_finalize());
 
     if(argus.norm_check)

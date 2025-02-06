@@ -136,46 +136,33 @@ void potf2_potrf_initData(const rocblas_handle handle,
                           Uh& hInfo,
                           const bool singular)
 {
-    using MT = rocblas2magma_type_t<T>;
-    typedef typename blas::traits<MT>::real_t real_t;
     if(CPU)
     {
-        magma_int_t b = 0;
-        magma_int_t idist = (magma_int_t) 1;
-        magma_int_t sizeA = lda * n;
-        magma_int_t iseed[4] = {0, 0, 0, 1};
-        lapack::larnv( idist, iseed, sizeA, (MT*)hA[b] );
-        for (int i = 0; i < n; ++i) {
-            real_t sum = max( blas::asum( n, (MT*)hA[b] + lda * i, 1    ),    // i-th col
-                              blas::asum( n, (MT*)hA[b] + i, lda ) );  // i-th row
-            hA[b][i + i * lda] = sum;
+        rocblas_init<T>(hA, true);
+
+        for(I b = 0; b < bc; ++b)
+        {
+            // scale to ensure positive definiteness
+            for(I i = 0; i < n; i++)
+                hA[b][i + i * lda] = hA[b][i + i * lda] * sconj(hA[b][i + i * lda]) * 400;
+
+            if(singular && (b == bc / 4 || b == bc / 2 || b == bc - 1))
+            {
+                // make some matrices not positive definite
+                // always the same elements for debugging purposes
+                // the algorithm must detect the lower order of the principal minors <= 0
+                // in those matrices in the batch that are non positive definite
+                I i = n / 4 + b;
+                i -= (i / n) * n;
+                hA[b][i + i * lda] = 0;
+                i = n / 2 + b;
+                i -= (i / n) * n;
+                hA[b][i + i * lda] = 0;
+                i = n - 1 + b;
+                i -= (i / n) * n;
+                hA[b][i + i * lda] = 0;
+            }
         }
-
-        // rocblas_init<T>(hA, true);
-
-        // for(I b = 0; b < bc; ++b)
-        // {
-        //     // scale to ensure positive definiteness
-        //     for(I i = 0; i < n; i++)
-        //         hA[b][i + i * lda] = hA[b][i + i * lda] * sconj(hA[b][i + i * lda]) * 400;
-
-        //     if(singular && (b == bc / 4 || b == bc / 2 || b == bc - 1))
-        //     {
-        //         // make some matrices not positive definite
-        //         // always the same elements for debugging purposes
-        //         // the algorithm must detect the lower order of the principal minors <= 0
-        //         // in those matrices in the batch that are non positive definite
-        //         I i = n / 4 + b;
-        //         i -= (i / n) * n;
-        //         hA[b][i + i * lda] = 0;
-        //         i = n / 2 + b;
-        //         i -= (i / n) * n;
-        //         hA[b][i + i * lda] = 0;
-        //         i = n - 1 + b;
-        //         i -= (i / n) * n;
-        //         hA[b][i + i * lda] = 0;
-        //     }
-        // }
     }
 
     if(GPU)
@@ -548,7 +535,7 @@ void testing_potf2_potrf(Arguments& argus)
     argus.validate_consumed();
 }
 
-template <magma_mode_t MODE, typename T>
+template <bool BATCHED, magma_mode_t MODE, typename T>
 void testing_magma_potrf(Arguments& argus)
 {
     using MT = rocblas2magma_type_t<T>;
@@ -561,6 +548,7 @@ void testing_magma_potrf(Arguments& argus)
     rocblas_int lda = argus.get<rocblas_int>("lda", n);
 
     rocblas_fill uplo = char2rocblas_fill(uploC);
+    rocblas_int bc = argus.batch_count;
     rocblas_int hot_calls = argus.iters;
 
     double gpu_time_used = 0, max_error = 0;
@@ -572,101 +560,139 @@ void testing_magma_potrf(Arguments& argus)
     CHECK_HIP_ERROR(hipGetDevice(&device));
     magma_setdevice(device);
 
-    magma_int_t size_A = n * lda;
+    magma_queue_t queue;
+    magma_queue_create(device, &queue);
 
-    magma_int_t info, hinfo;
+    size_t size_A = size_t(lda) * n;
+    size_t size_dInfo = BATCHED ? 1 : 0;
+    size_t size_ARes = (argus.unit_check || argus.norm_check || argus.hash_check) ? size_A : 0;
+    size_t size_infoRes = (argus.unit_check || argus.norm_check || argus.hash_check) ? 1 : 0;
 
     // /* Initialize the matrix */
-    host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
-    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
+    host_batch_vector<T> hA(size_A, 1, bc);
+    host_strided_batch_vector<rocblas_int> hInfo(1, 1, 1, bc);
+
+    device_batch_vector<T> dA(size_A, 1, bc);
+    device_strided_batch_vector<magma_int_t> dInfo(size_dInfo, 1, 1, bc);
+
+    host_batch_vector<T> hARes(size_ARes, 1, bc);
+    host_strided_batch_vector<magma_int_t> hInfoRes(size_infoRes, 1, 1, bc);
 
     if(argus.norm_check)
     {
-        host_strided_batch_vector<T> hARes(size_A, 1, size_A, 1);
-
         // input data initialization
-        potf2_potrf_initData<true, true, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+        potf2_potrf_initData<true, true, T>(handle, uplo, n, dA, lda, size_A, dInfo, bc, hA, hInfo,
                                             argus.singular);
-
-        // hash input
-        size_t hashA = deterministic_hash(hA, 1);
 
         // execute computations
         // GPU lapack
-        if(MODE == MagmaHybrid)
-            (magma_potrf_gpu(rocblas2magma_fill(uplo),
-                                            n, (MT*)dA.data(), lda, &info));
+        if(BATCHED)
+        {
+            CHECK_MAGMA_ERROR(magma_potrf_batched(rocblas2magma_fill(uplo), n, (MT**)dA.ptr_on_device(), lda, dInfo.data(), bc, queue));
+        }
         else
-            (magma_potrf_native(rocblas2magma_fill(uplo),
-                                            n, (MT*)dA.data(), lda, &info));
+        {
+            if(MODE == MagmaHybrid)
+                CHECK_MAGMA_ERROR(magma_potrf_gpu(rocblas2magma_fill(uplo),
+                                                n, (MT*)dA[0], lda, hInfoRes[0]));
+            else
+                CHECK_MAGMA_ERROR(magma_potrf_native(rocblas2magma_fill(uplo),
+                                                n, (MT*)dA[0], lda, hInfoRes[0]));
+        }
         CHECK_HIP_ERROR(hARes.transfer_from(dA));
 
-        // hash output
-        size_t hashARes = deterministic_hash(hARes, 1);
+        if(BATCHED)
+            CHECK_HIP_ERROR(hInfoRes.transfer_from(dInfo));
 
         // CPU lapack
-        cpu_potrf(uplo, n, hA.data(), lda, &hinfo);
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            cpu_potrf(uplo, n, hA[b], lda, hInfo[b]);
+        }
 
         // error is ||hA - hARes|| / ||hA|| (ideally ||LL' - Lres Lres'|| / ||LL'||)
         // (THIS DOES NOT ACCOUNT FOR NUMERICAL REPRODUCIBILITY ISSUES.
         // IT MIGHT BE REVISITED IN THE FUTURE)
         // using frobenius norm
-        rocblas_int nn;
+        double err;
+        magma_int_t nn;
         max_error = 0;
-
-        nn = info == 0 ? n : info;
-        // (TODO: For now, the algorithm is modifying the whole input matrix even when
-        //  it is not positive definite. So we only check the principal nn-by-nn submatrix.
-        //  Once this is corrected, nn could be always equal to n.)
-        max_error = (uplo == rocblas_fill_lower)
-            ? norm_error_lowerTr('F', nn, nn, lda, hA.data(), hARes.data())
-            : norm_error_upperTr('F', nn, nn, lda, hA.data(), hARes.data());
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            nn = hInfoRes[b][0] == 0 ? n : hInfoRes[b][0];
+            // (TODO: For now, the algorithm is modifying the whole input matrix even when
+            //  it is not positive definite. So we only check the principal nn-by-nn submatrix.
+            //  Once this is corrected, nn could be always equal to n.)
+            max_error = (uplo == rocblas_fill_lower)
+                ? norm_error_lowerTr('F', nn, nn, lda, hA[b], hARes[b])
+                : norm_error_upperTr('F', nn, nn, lda, hA[b], hARes[b]);
+        }
 
         // also check info for non positive definite cases
-        EXPECT_EQ(hinfo, info);
-        if(hinfo != info)
-            max_error++;
-
-        std::cout << "hinfo: " << hinfo << std::endl;
-        std::cout << "info: " << info << std::endl;
+        err = 0;
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            EXPECT_EQ(hInfo[b][0], hInfoRes[b][0]) << "where b = " << b;
+            if(hInfo[b][0] != hInfoRes[b][0])
+                err++;
+        }
+        max_error += err;
 
         ROCSOLVER_TEST_CHECK(T, max_error, n);
     }
 
 
-    potf2_potrf_initData<true, false, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+    potf2_potrf_initData<true, false, T>(handle, uplo, n, dA, lda, size_A, dInfo, bc, hA, hInfo,
                                          argus.singular);
     
     // cold calls
     for(int iter = 0; iter < 2; iter++)
     {
-        potf2_potrf_initData<false, true, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+        potf2_potrf_initData<false, true, T>(handle, uplo, n, dA, lda, size_A, dInfo, bc, hA, hInfo,
                                              argus.singular);
 
-        if(MODE == MagmaHybrid)
-            (magma_potrf_gpu(rocblas2magma_fill(uplo),
-                                            n, (MT*)dA.data(), lda, &info));
+        if(BATCHED)
+        {
+            magma_potrf_batched(rocblas2magma_fill(uplo), n, (MT**)dA.ptr_on_device(), lda, dInfo.data(), bc, queue);
+        }
         else
-            (magma_potrf_native(rocblas2magma_fill(uplo),
-                                            n, (MT*)dA.data(), lda, &info));
+        {
+            if(MODE == MagmaHybrid)
+                magma_potrf_gpu(rocblas2magma_fill(uplo),
+                                                n, (MT*)dA[0], lda, hInfoRes[0]);
+            else
+                magma_potrf_native(rocblas2magma_fill(uplo),
+                                                n, (MT*)dA[0], lda, hInfoRes[0]);
+        }
     }
 
     for(rocblas_int iter = 0; iter < hot_calls; iter++)
     {
-        potf2_potrf_initData<false, true, T>(handle, uplo, n, dA, lda, size_A, info, 1, hA, hinfo,
+        potf2_potrf_initData<false, true, T>(handle, uplo, n, dA, lda, size_A, dInfo, bc, hA, hInfo,
                                              argus.singular);
 
-        double start = magma_wtime() * 1e6;
-        if(MODE == MagmaHybrid)
-            (magma_potrf_gpu(rocblas2magma_fill(uplo),
-                                            n, (MT*)dA.data(), lda, &info));
+        double start;
+        if(BATCHED)
+        {
+            start = magma_sync_wtime(queue) * 1e6;
+            magma_potrf_batched(rocblas2magma_fill(uplo), n, (MT**)dA.ptr_on_device(), lda, dInfo.data(), bc, queue);
+            gpu_time_used += (magma_sync_wtime(queue) * 1e6) - start;
+        }
         else
-            (magma_potrf_native(rocblas2magma_fill(uplo),
-                                            n, (MT*)dA.data(), lda, &info));
-        gpu_time_used += (magma_wtime() * 1e6) - start;
+        {
+            start = magma_wtime() * 1e6;
+            if(MODE == MagmaHybrid)
+                magma_potrf_gpu(rocblas2magma_fill(uplo),
+                                                n, (MT*)dA[0], lda, hInfoRes[0]);
+            else
+                magma_potrf_native(rocblas2magma_fill(uplo),
+                                                n, (MT*)dA[0], lda, hInfoRes[0]);
+            gpu_time_used += (magma_wtime() * 1e6) - start;
+        }
     }
     gpu_time_used /= hot_calls;
 
+    magma_queue_destroy(queue);
     CHECK_MAGMA_ERROR(magma_finalize());
 
     if(argus.norm_check)
