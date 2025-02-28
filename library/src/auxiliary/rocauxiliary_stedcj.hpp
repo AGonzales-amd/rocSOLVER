@@ -430,9 +430,20 @@ rocblas_status rocsolver_stedcj_template(rocblas_handle handle,
 
     // 3. merge phase
     //----------------
+    int device;
+    HIP_CHECK(hipGetDevice(&device));
+    hipDeviceProp_t deviceProperties;
+    HIP_CHECK(hipGetDeviceProperties(&deviceProperties, device));
+
     size_t lmemsize1 = sizeof(S) * 2 * STEDC_BDIM;
-    size_t lmemsize3 = sizeof(S) * STEDC_BDIM;
-    rocblas_int numgrps3 = ((n - 1) / maxblks + 1) * maxblks;
+    size_t lmemsize3 = STEDC_EXTERNAL_GEMM ? (sizeof(S) * STEDC_BDIM) : deviceProperties.sharedMemPerBlock;
+    size_t lmemsize4 = sizeof(S) * STEDC_BDIM;
+
+    // each sub-block will be split into groups of 16 vectors
+    rocblas_int sblk_size = (n - 1) / maxblks + 1;
+    rocblas_int num_grps_per_sblk = (sblk_size - 1) / 16 + 1;
+    rocblas_int numgrps3 = num_grps_per_sblk * maxblks;
+    rocblas_int numgrps4 = ((n - 1) / maxblks + 1) * maxblks;
 
     // launch merge for level k
     /** TODO: using max number of levels for now. Kernels return immediately when passing
@@ -461,8 +472,8 @@ rocblas_status rocsolver_stedcj_template(rocblas_handle handle,
 
         // c. update level
         ROCSOLVER_LAUNCH_KERNEL((stedc_mergeUpdate_kernel<rocsolver_stedc_mode_jacobi, S>),
-                                dim3(numgrps3, STEDC_NUM_SPLIT_BLKS, batch_count), dim3(STEDC_BDIM),
-                                lmemsize3, stream, k, n, D, strideD, tempvect, 0, ldt, strideT,
+                                dim3(numgrps4, STEDC_NUM_SPLIT_BLKS, batch_count), dim3(STEDC_BDIM),
+                                lmemsize4, stream, k, n, D, strideD, tempvect, 0, ldt, strideT,
                                 tmpz, tempgemm, splits_map);
     }
 
