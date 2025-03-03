@@ -558,7 +558,7 @@ rocblas_status rocsolver_stedcx_template(rocblas_handle handle,
     HIP_CHECK(hipGetDeviceProperties(&deviceProperties, device));
 
     size_t lmemsize1 = sizeof(S) * 2 * STEDC_BDIM;
-    size_t lmemsize3 = STEDC_EXTERNAL_GEMM ? (sizeof(S) * STEDC_BDIM) : deviceProperties.sharedMemPerBlock;
+    size_t lmemsize3 = STEDCX_EXTERNAL_GEMM ? (sizeof(S) * STEDC_BDIM) : deviceProperties.sharedMemPerBlock;
     size_t lmemsize4 = sizeof(S) * STEDC_BDIM;
 
     // each sub-block will be split into groups of 16 vectors

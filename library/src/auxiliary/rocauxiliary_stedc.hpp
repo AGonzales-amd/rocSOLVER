@@ -1813,7 +1813,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
                     // when using external gemms for the update, we need to
                     // put vectors in padded matrix 'temps'
                     // (this is to compute 'vecs = C * temps' using external gemm call)
-                    if(go && idd[p2 + j] == 1)
+                    if(go)
+                    {
                         for(int i = tidb; i < in + sz; i += dim)
                         {
                             if(i >= in && idd[p2 + j] == 1 && idd[i] == 1)
@@ -1830,6 +1831,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
                             else
                                 temps[i + (p2 + j) * n] = 0;
                         }
+                    }
                 }
                 else
                 {
