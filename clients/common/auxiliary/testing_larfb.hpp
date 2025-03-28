@@ -276,6 +276,48 @@ void larfb_getError(const rocblas_handle handle,
     larfb_initData<true, true, T>(handle, side, trans, direct, storev, m, n, k, dV, ldv, dT, ldt,
                                   dA, lda, hV, hT, hA, hW, sizeW);
 
+    // for(int j = 0; j < k; j++)
+    // {
+    //     for(int i = 0; i < k; i++)
+    //     {
+    //         if(direct == rocblas_forward_direction)
+    //         {
+    //             if(j > i)
+    //                 hT[0][j + i * ldt] = 0;
+    //         }
+    //         else
+    //         {
+    //             if(j < i)
+    //                 hT[0][j + i * ldt] = 0;
+    //         }
+    //     }
+    // }
+
+// #ifdef ROCSOLVER_CLIENTS_TEST
+    // check if hT is triangular
+    for(int j = 0; j < k; j++)
+    {
+        for(int i = 0; i < k; i++)
+        {
+            if(direct == rocblas_forward_direction)
+            {
+                // uplo = upper
+                if(i > j)
+                //     ASSERT_TRUE(hT[0][j * ldt + i] == 0);
+                    hT[0][j * ldt + i] = 0;
+            }
+            else
+            {
+                // uplo = lower
+                if(i < j)
+                //     ASSERT_TRUE(hT[0][j * ldt + i] == 0);
+                    hT[0][j * ldt + i] = 0;
+            }
+        }
+    }
+// #endif
+    CHECK_HIP_ERROR(dT.transfer_from(hT));
+
     // execute computations
     // GPU lapack
     CHECK_ROCBLAS_ERROR(rocsolver_larfb(handle, side, trans, direct, storev, m, n, k, dV.data(),

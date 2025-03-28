@@ -39,6 +39,212 @@
 ROCSOLVER_BEGIN_NAMESPACE
 
 template <typename T, typename U>
+ROCSOLVER_KERNEL void copymatV(const bool colwise,
+                               const bool forward,
+                               const bool leftside,
+                               const rocblas_int m,
+                               const rocblas_int n,
+                               const rocblas_int k,
+                               U V,
+                               const rocblas_int shiftV,
+                               const rocblas_int ldv,
+                               const rocblas_stride strideV,
+                               T* tmpV)
+{
+    const auto blocksizex = hipBlockDim_x;
+    const auto blocksizey = hipBlockDim_y;
+    const auto b = hipBlockIdx_z;
+    const auto i = hipBlockIdx_x * blocksizex + hipThreadIdx_x;
+    const auto j = hipBlockIdx_y * blocksizey + hipThreadIdx_y;
+
+    T *Vp, *Wp;
+
+    rocblas_int ldw;
+    rocblas_stride strideW;
+
+    if(colwise)
+    {
+        // if(forward)
+        // {
+        //     // uploV = rocblas_fill_lower;
+        //     // offsetV1 = shiftV;
+        //     // offsetV2 = shiftV + idx2D(k, 0, ldv);
+        //     if(i < m && j < k)
+        //     {
+        //         ldw = m;
+        //         strideW = rocblas_stride(m) * k;
+
+        //         Wp = tmpV + b * strideW;
+        //         Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+        //         if(i == j)
+        //             Wp[i + j * ldw] = 1;
+        //         else if(i > j)
+        //             Wp[i + j * ldw] = Vp[i + j * ldv];
+        //         else
+        //             Wp[i + j * ldw] = 0;
+        //     }
+        // }
+        // else
+        // {
+        // uploV = rocblas_fill_upper;
+        // offsetV1 = shiftV + idx2D((leftside ? m - k : n - k), 0, ldv);
+        // offsetV2 = shiftV;
+        if(leftside)
+        {
+            if(i < m && j < k)
+            {
+                ldw = m;
+                strideW = rocblas_stride(m) * k;
+
+                Wp = tmpV + b * strideW;
+                Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+                if(forward)
+                {
+                    if(i == j)
+                        Wp[i + j * ldw] = 1;
+                    else if(i > j)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+                else
+                {
+                    if(i == j + m - k)
+                        Wp[i + j * ldw] = 1;
+                    else if(i < j + m - k)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+            }
+        }
+        else
+        {
+            if(i < n && j < k)
+            {
+                ldw = n;
+                strideW = rocblas_stride(n) * k;
+
+                Wp = tmpV + b * strideW;
+                Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+                if(forward)
+                {
+                    if(i == j)
+                        Wp[i + j * ldw] = 1;
+                    else if(i > j)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+                else
+                {
+                    if(i == j + n - k)
+                        Wp[i + j * ldw] = 1;
+                    else if(i < j + n - k)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+            }
+        }
+        // }
+    }
+    else
+    {
+        // if(forward)
+        // {
+        //     // uploV = rocblas_fill_upper;
+        //     // offsetV1 = shiftV;
+        //     // offsetV2 = shiftV + idx2D(0, k, ldv);
+        //     if(i < k && j < n)
+        //     {
+        //         ldw = k;
+        //         strideW = rocblas_stride(k) * n;
+
+        //         Wp = tmpV + b * strideW;
+        //         Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+        //         if(i == j)
+        //             Wp[i + j * ldw] = 1;
+        //         else if(i < j)
+        //             Wp[i + j * ldw] = Vp[i + j * ldv];
+        //         else
+        //             Wp[i + j * ldw] = 0;
+        //     }
+        // }
+        // else
+        // {
+        // uploV = rocblas_fill_lower;
+        // offsetV1 = shiftV + idx2D(0, (leftside ? m - k : n - k), ldv);
+        // offsetV2 = shiftV;
+        if(leftside)
+        {
+            if(i < k && j < m)
+            {
+                ldw = k;
+                strideW = rocblas_stride(k) * m;
+
+                Wp = tmpV + b * strideW;
+                Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+                if(forward)
+                {
+                    if(i == j)
+                        Wp[i + j * ldw] = 1;
+                    else if(i < j)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+                else
+                {
+                    if(i + m - k == j)
+                        Wp[i + j * ldw] = 1;
+                    else if(i + m - k > j)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+            }
+        }
+        else
+        {
+            if(i < k && j < n)
+            {
+                ldw = k;
+                strideW = rocblas_stride(k) * n;
+
+                Wp = tmpV + b * strideW;
+                Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+                if(forward)
+                {
+                    if(i == j)
+                        Wp[i + j * ldw] = 1;
+                    else if(i < j)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+                else
+                {
+                    if(i + n - k == j)
+                        Wp[i + j * ldw] = 1;
+                    else if(i + n - k > j)
+                        Wp[i + j * ldw] = Vp[i + j * ldv];
+                    else
+                        Wp[i + j * ldw] = 0;
+                }
+            }
+        }
+        // }
+    }
+}
+
+template <typename T, typename U>
 ROCSOLVER_KERNEL void copymatA1(const rocblas_int ldw,
                                 const rocblas_int order,
                                 U A,
@@ -110,10 +316,11 @@ void rocsolver_larfb_getMemorySize(const rocblas_side side,
     // size of temporary array for computations with
     // triangular part of V
     if(side == rocblas_side_left)
-        *size_tmptr = n;
+        *size_tmptr = n + std::max(m, n);
     else
-        *size_tmptr = m;
+        *size_tmptr = m + std::max(n, m);
     *size_tmptr *= sizeof(T) * k * batch_count;
+    // *size_tmptr *= 2;
 
     // size of array of pointers to workspace
     if(BATCHED)
@@ -216,6 +423,7 @@ rocblas_status rocsolver_larfb_template(rocblas_handle handle,
 
     // constants to use when calling rocablas functions
     T minone = -1;
+    T zero = 0;
     T one = 1;
 
     // determine the side, size of workspace
@@ -312,16 +520,86 @@ rocblas_status rocsolver_larfb_template(rocblas_handle handle,
     rocblas_stride strideW = rocblas_stride(ldw) * order;
     uploT = (forward ? rocblas_fill_upper : rocblas_fill_lower);
 
+    size_t offsetT2 = order * ldw * batch_count;
+
+    T* tmpV = tmptr + ldw * order * batch_count;
+
     // copy A1 to tmptr
     rocblas_int blocksx = (order - 1) / 32 + 1;
     rocblas_int blocksy = (ldw - 1) / 32 + 1;
     ROCSOLVER_LAUNCH_KERNEL(copymatA1, dim3(blocksx, blocksy, batch_count), dim3(32, 32), 0, stream,
                             ldw, order, A, offsetA1, lda, strideA, tmptr);
 
+    // rocblas_int vblocksx = (order - 1) / 32 + 1;
+    // rocblas_int vblocksy = (ldw - 1) / 32 + 1;
+    // ROCSOLVER_LAUNCH_KERNEL(copymatV, dim3(vblocksx, vblocksy, batch_count), dim3(32, 32), 0, stream,
+    //                         m, n, k, V, shiftV, ldv, strideV, tmpV);
+
+    // // compute: V1' * A1
+    // //   or    A1 * V1
+    // rocblasCall_trmm(handle, side, uploV, transp, rocblas_diagonal_unit, ldw, order, &one, 0, V,
+    //                  offsetV1, ldv, strideV, tmptr, 0, ldw, strideW, batch_count, workArr);
+    rocblas_int ldtv;
+    rocblas_stride strideTV;
+
+    rocblas_int vblocksx;
+    rocblas_int vblocksy;
+
+    if(colwise)
+    {
+        if(leftside)
+        {
+            ldtv = m;
+            strideTV = rocblas_stride(m) * k;
+
+            vblocksx = (m - 1) / 32 + 1;
+            vblocksy = (k - 1) / 32 + 1;
+        }
+        else
+        {
+            ldtv = n;
+            strideTV = rocblas_stride(n) * k;
+
+            vblocksx = (n - 1) / 32 + 1;
+            vblocksy = (k - 1) / 32 + 1;
+        }
+    }
+    else
+    {
+        if(leftside)
+        {
+            ldtv = k;
+            strideTV = rocblas_stride(k) * m;
+
+            vblocksx = (k - 1) / 32 + 1;
+            vblocksy = (m - 1) / 32 + 1;
+        }
+        else
+        {
+            ldtv = k;
+            strideTV = rocblas_stride(k) * n;
+
+            vblocksx = (k - 1) / 32 + 1;
+            vblocksy = (n - 1) / 32 + 1;
+        }
+    }
+
+    ROCSOLVER_LAUNCH_KERNEL(copymatV, dim3(vblocksx, vblocksy, batch_count), dim3(32, 32), 0, stream,
+                            colwise, forward, leftside, m, n, k, V, shiftV, ldv, strideV, tmpV);
+
     // compute: V1' * A1
     //   or    A1 * V1
-    rocblasCall_trmm(handle, side, uploV, transp, rocblas_diagonal_unit, ldw, order, &one, 0, V,
-                     offsetV1, ldv, strideV, tmptr, 0, ldw, strideW, batch_count, workArr);
+    rocblasCall_trmm(handle, side, uploV, transp, rocblas_diagonal_unit, ldw, order, &one, 0, tmpV,
+                     offsetV1 - shiftV, ldtv, strideTV, tmptr, 0, ldw, strideW, batch_count, workArr);
+
+    // if(leftside)
+    //     rocsolver_gemm(handle, transp, rocblas_operation_none, ldw, order, ldw, &one, V,
+    //                 offsetV1, ldv, strideV, A, offsetA1, lda, strideA, &zero, tmptr, 0, ldw,
+    //                 strideW, batch_count, workArr);
+    // else
+    //     rocsolver_gemm(handle, transp, rocblas_operation_none, ldw, order, order, &one, V,
+    //                 offsetV1, ldv, strideV, A, offsetA1, lda, strideA, &zero, tmptr, 0, ldw,
+    //                 strideW, batch_count, workArr);
 
     // compute: V1' * A1 + V2' * A2
     //    or    A1 * V1 + A2 * V2
@@ -341,6 +619,14 @@ rocblas_status rocsolver_larfb_template(rocblas_handle handle,
     //    or    (A1 * V1 + A2 * V2) * trans(T)
     rocblasCall_trmm(handle, side, uploT, transt, rocblas_diagonal_non_unit, ldw, order, &one, 0, F,
                      shiftF, ldf, strideF, tmptr, 0, ldw, strideW, batch_count, workArr);
+    // if(leftside)
+    //     rocsolver_gemm(handle, transt, rocblas_operation_none, ldw, order, ldw, &one, F,
+    //                 shiftF, ldf, strideF, tmptr, offsetT2, ldw, strideW, &zero, tmptr, 0, ldw,
+    //                 strideW, batch_count, workArr);
+    // else
+    //     rocsolver_gemm(handle, rocblas_operation_none, transt, ldw, order, order, &one, tmptr,
+    //                 offsetT2, ldw, strideW, F, shiftF, ldf, strideF, &zero, tmptr, 0, ldw,
+    //                 strideW, batch_count, workArr);
 
     // compute: A2 - V2 * trans(T) * (V1' * A1 + V2' * A2)
     //    or    A2 - (A1 * V1 + A2 * V2) * trans(T) * V2'

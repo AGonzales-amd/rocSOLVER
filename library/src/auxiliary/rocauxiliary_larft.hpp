@@ -318,8 +318,11 @@ rocblas_status rocsolver_larft_template(rocblas_handle handle,
 
             // multiply by the previous triangular factor
             trans = rocblas_operation_none;
-            rocblasCall_trmv<T>(handle, uplo, trans, diag, i, F, 0, ldf, strideF, F,
-                                idx2D(0, i, ldf), 1, strideF, work, stridew, batch_count);
+            // rocblasCall_trmv<T>(handle, uplo, trans, diag, i, F, 0, ldf, strideF, F,
+            //                     idx2D(0, i, ldf), 1, strideF, work, stridew, batch_count);
+            rocblasCall_gemv<T>(handle, trans, i, i, scalars + 2, 0, F, 0, ldf, strideF, F,
+                                idx2D(0, i, ldf), 1, strideF, scalars + 1, 0, F, idx2D(0, i, ldf),
+                                1, strideF, batch_count, workArr);
         }
     }
     else
@@ -361,9 +364,13 @@ rocblas_status rocsolver_larft_template(rocblas_handle handle,
 
             // multiply by the previous triangular factor
             trans = rocblas_operation_none;
-            rocblasCall_trmv<T>(handle, uplo, trans, diag, k - i - 1, F, idx2D(i + 1, i + 1, ldf),
-                                ldf, strideF, F, idx2D(i + 1, i, ldf), 1, strideF, work, stridew,
-                                batch_count);
+            // rocblasCall_trmv<T>(handle, uplo, trans, diag, k - i - 1, F, idx2D(i + 1, i + 1, ldf),
+            //                     ldf, strideF, F, idx2D(i + 1, i, ldf), 1, strideF, work, stridew,
+            //                     batch_count);
+            rocblasCall_gemv<T>(handle, trans, k - i - 1, k - i - 1, scalars + 2, 0, F,
+                                idx2D(i + 1, i + 1, ldf), ldf, strideF, F, idx2D(i + 1, i, ldf), 1,
+                                strideF, scalars + 1, 0, F, idx2D(i + 1, i, ldf), 1, strideF,
+                                batch_count, workArr);
         }
     }
 
