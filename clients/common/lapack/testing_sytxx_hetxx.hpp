@@ -689,11 +689,11 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
 
     // /* Initialize the matrix */
     host_strided_batch_vector<T> hA(size_A, 1, size_A, 1);
-    host_strided_batch_vector<T> hARes(size_A, 1, size_A, 1);
-    device_strided_batch_vector<T> dA(size_A, 1, size_A, 1);
     host_strided_batch_vector<S> hD(size_D, 1, size_D, 1);
     host_strided_batch_vector<S> hE(size_E, 1, size_E, 1);
     host_strided_batch_vector<T> hTau(size_tau, 1, size_tau, 1);
+
+    device_strided_batch_vector<T> dA(VER != 2 ? size_A : 0, 1, size_A, 1);
 
     magma_int_t nb     = magma_get_chetrd_nb(n);
     magma_int_t lwork  = n*nb;  /* We suppose the magma nb is bigger than lapack nb */
@@ -712,9 +712,16 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
 
         // input data initialization
         sytxx_hetxx_initData<true, true, T>(handle, n, dA, lda, 1, hA);
+        for(rocblas_int i = 0; i < n; i++)
+        {
+            for(rocblas_int j = 0; j < n; j++)
+            {
+                w_A[i + j * lda] = ((MT*)hA[0])[i + j * lda];
+            }
+        }
 
         // execute computations
-        // GPU lapack
+        // MAGMA lapack
         if(VER == 0)
         {
             magma_sytrd_hetrd_gpu(rocblas2magma_fill(uplo),
@@ -722,20 +729,25 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
                                   (MT*)hTau.data(), (MT*)w_A, lda,
                                   work, lwork, &info);
         }
-        else
+        else if(VER == 1)
         {
             magma_sytrd2_hetrd2_gpu(rocblas2magma_fill(uplo),
                                     n, (MT*)dA.data(), lda, hD.data(), hE.data(),
                                     (MT*)hTau.data(), (MT*)w_A, lda,
                                     work, lwork, dwork, ldwork, &info);
         }
-        CHECK_HIP_ERROR(hARes.transfer_from(dA));
+        else
+        {
+            magma_sytrd_hetrd(rocblas2magma_fill(uplo),
+                                n, w_A, lda, hD.data(), hE.data(),
+                                (MT*)hTau.data(), work, lwork, &info);
+        }
 
         // Reconstruct matrix A from the factorization for implicit testing
         // A = H(n-1)...H(2)H(1)*T*H(1)'H(2)'...H(n-1)' if upper
         // A = H(1)H(2)...H(n-1)*T*H(n-1)'...H(2)'H(1)' if lower
         std::vector<T> v(n);
-        T* a = hARes.data();
+        T* a = (T*)w_A;
         T* t = hTau.data();
 
         if(uplo == rocblas_fill_lower)
@@ -801,8 +813,8 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
         // error is ||hA - hARes|| / ||hA||
         // using frobenius norm
         max_error = (uplo == rocblas_fill_lower)
-            ? norm_error_lowerTr('F', n, n, lda, hA.data(), hARes.data())
-            : norm_error_upperTr('F', n, n, lda, hA.data(), hARes.data());
+            ? norm_error_lowerTr('F', n, n, lda, hA.data(), a)
+            : norm_error_upperTr('F', n, n, lda, hA.data(), a);
 
         ROCSOLVER_TEST_CHECK(T, max_error, n);
     }
@@ -814,6 +826,13 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
     for(int iter = 0; iter < 2; iter++)
     {
         sytxx_hetxx_initData<false, true, T>(handle, n, dA, lda, 1, hA);
+        for(rocblas_int i = 0; i < n; i++)
+        {
+            for(rocblas_int j = 0; j < n; j++)
+            {
+                w_A[i + j * lda] = ((MT*)hA[0])[i + j * lda];
+            }
+        }
 
         if(VER == 0)
         {
@@ -822,18 +841,31 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
                                   (MT*)hTau.data(), (MT*)w_A, lda,
                                   work, lwork, &info);
         }
-        else
+        else if(VER == 1)
         {
             magma_sytrd2_hetrd2_gpu(rocblas2magma_fill(uplo),
                                     n, (MT*)dA.data(), lda, hD.data(), hE.data(),
                                     (MT*)hTau.data(), (MT*)w_A, lda,
                                     work, lwork, dwork, ldwork, &info);
         }
+        else
+        {
+            magma_sytrd_hetrd(rocblas2magma_fill(uplo),
+                                n, w_A, lda, hD.data(), hE.data(),
+                                (MT*)hTau.data(), work, lwork, &info);
+        }
     }
 
     for(rocblas_int iter = 0; iter < hot_calls; iter++)
     {
         sytxx_hetxx_initData<false, true, T>(handle, n, dA, lda, 1, hA);
+        for(rocblas_int i = 0; i < n; i++)
+        {
+            for(rocblas_int j = 0; j < n; j++)
+            {
+                w_A[i + j * lda] = ((MT*)hA[0])[i + j * lda];
+            }
+        }
 
         double start = magma_wtime() * 1e6;
         if(VER == 0)
@@ -843,12 +875,18 @@ void testing_magma_sytrd_hetrd(Arguments& argus)
                                   (MT*)hTau.data(), (MT*)w_A, lda,
                                   work, lwork, &info);
         }
-        else
+        else if(VER == 1)
         {
             magma_sytrd2_hetrd2_gpu(rocblas2magma_fill(uplo),
                                     n, (MT*)dA.data(), lda, hD.data(), hE.data(),
                                     (MT*)hTau.data(), (MT*)w_A, lda,
                                     work, lwork, dwork, ldwork, &info);
+        }
+        else
+        {
+            magma_sytrd_hetrd(rocblas2magma_fill(uplo),
+                                n, w_A, lda, hD.data(), hE.data(),
+                                (MT*)hTau.data(), work, lwork, &info);
         }
         gpu_time_used += (magma_wtime() * 1e6) - start;
     }

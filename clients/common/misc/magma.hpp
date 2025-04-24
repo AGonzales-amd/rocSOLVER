@@ -518,6 +518,62 @@ inline magma_int_t magma_geqrf2_gpu(magma_int_t m,
 }
 
 /* SYTRD/HETRD SYTRD2/HETRD2*/
+inline magma_int_t magma_sytrd_hetrd(magma_uplo_t uplo,
+                                     magma_int_t n,
+                                     float* A,
+                                     magma_int_t lda,
+                                     float* d,
+                                     float* e,
+                                     float* tau,
+                                     float* work,
+                                     magma_int_t lwork,
+                                     magma_int_t* info)
+{
+    return magma_ssytrd(uplo, n, A, lda, d, e, tau, work, lwork, info);
+}
+
+inline magma_int_t magma_sytrd_hetrd(magma_uplo_t uplo,
+                                     magma_int_t n,
+                                     double* A,
+                                     magma_int_t lda,
+                                     double* d,
+                                     double* e,
+                                     double* tau,
+                                     double* work,
+                                     magma_int_t lwork,
+                                     magma_int_t* info)
+{
+    return magma_dsytrd(uplo, n, A, lda, d, e, tau, work, lwork, info);
+}
+
+inline magma_int_t magma_sytrd_hetrd(magma_uplo_t uplo,
+                                     magma_int_t n,
+                                     magmaFloatComplex* A,
+                                     magma_int_t lda,
+                                     float* d,
+                                     float* e,
+                                     magmaFloatComplex* tau,
+                                     magmaFloatComplex* work,
+                                     magma_int_t lwork,
+                                     magma_int_t* info)
+{
+    return magma_chetrd(uplo, n, A, lda, d, e, tau, work, lwork, info);
+}
+
+inline magma_int_t magma_sytrd_hetrd(magma_uplo_t uplo,
+                                     magma_int_t n,
+                                     magmaDoubleComplex* A,
+                                     magma_int_t lda,
+                                     double* d,
+                                     double* e,
+                                     magmaDoubleComplex* tau,
+                                     magmaDoubleComplex* work,
+                                     magma_int_t lwork,
+                                     magma_int_t* info)
+{
+    return magma_zhetrd(uplo, n, A, lda, d, e, tau, work, lwork, info);
+}
+
 inline magma_int_t magma_sytrd_hetrd_gpu(magma_uplo_t uplo,
                                          magma_int_t n,
                                          magmaFloat_ptr dA,

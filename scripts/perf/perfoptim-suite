@@ -24,6 +24,7 @@
 # magma_geqrf
 # magma_sytrd
 # magma_sytrd2
+# magma_sytrd_cpu
 # magma_stedx
 # magma_gesvd
 # magma_getrf_hybrid
@@ -31,7 +32,7 @@
 # magma_getrfBatch
 # magma_potrfBatch
 # (note: several can be selected)
-Slist="syevd syevdx syevj syevjBatch gesvd gesvdj gesvdjBatch potrf potrfBatch geqrf sytrd magma_syevd magma_syevdx magma_potrf_hybrid magma_potrf_native magma_geqrf magma_sytrd magma_sytrd2 stedcx magma_stedx magma_gesvd magma_getrf_hybrid magma_getrf_native magma_getrfBatch magma_potrfBatch"
+Slist="syevd syevdx syevj syevjBatch gesvd gesvdj gesvdjBatch potrf potrfBatch geqrf sytrd magma_syevd magma_syevdx magma_potrf_hybrid magma_potrf_native magma_geqrf magma_sytrd magma_sytrd2 magma_sytrd_cpu stedcx magma_stedx magma_gesvd magma_getrf_hybrid magma_getrf_native magma_getrfBatch magma_potrfBatch"
 
 # precisions to use
 # valid options are: (default is d)

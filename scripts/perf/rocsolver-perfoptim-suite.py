@@ -40,7 +40,7 @@ from subprocess import Popen, PIPE
 #################################################
 ######### Benchmark suites definitions ##########
 #################################################
-common = '--iters 3 --perf 1 --device 6' #always do 3 iterations in perf mode
+common = '--iters 3 --perf 1' #always do 3 iterations in perf mode
 
 """
 SYEVD tests are run, for the given precision and sizes, with vectors and without vectors
@@ -91,6 +91,15 @@ SYTRD2 tests are run, for the given precision and sizes
 """
 def magma_sytrd2_hetrd2_suite(*, suite, precision, sizenormal, sizebatch):
     fn = 'magma_sytrd2' if precision == 's' or precision == 'd' else 'magma_hetrd2'
+    size = sizenormal
+    for s in size:
+        row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
+        yield (row, s, f'-f {fn} -r {precision} -n {s} {common}')
+"""
+SYTRD_CPU tests are run, for the given precision and sizes
+"""
+def magma_sytrd_hetrd_cpu_suite(*, suite, precision, sizenormal, sizebatch):
+    fn = 'magma_sytrd_cpu' if precision == 's' or precision == 'd' else 'magma_hetrd_cpu'
     size = sizenormal
     for s in size:
         row = {'name': precision+suite, 'name_test': suite, 'function': fn, 'precision': precision, 'n': s}
@@ -344,6 +353,7 @@ suites = {
   'magma_geqrf': magma_geqrf_suite,
   'magma_sytrd': magma_sytrd_hetrd_suite,
   'magma_sytrd2': magma_sytrd2_hetrd2_suite,
+  'magma_sytrd_cpu': magma_sytrd_hetrd_cpu_suite,
   'magma_stedx': magma_stedx_suite,
   'magma_gesvd': magma_gesvd_suite,
   'magma_getrf_hybrid': magma_getrf_hybrid_suite,
