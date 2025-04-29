@@ -90,6 +90,45 @@ ROCSOLVER_KERNEL void addmatA1(const rocblas_int ldw,
     }
 }
 
+template <typename T, typename U>
+ROCSOLVER_KERNEL void copymatV1(const rocblas_int k,
+                               const rocblas_fill uplo,
+                               U V,
+                               const rocblas_int shiftV,
+                               const rocblas_int ldv,
+                               const rocblas_stride strideV,
+                               T* tmpV)
+{
+    const auto b = hipBlockIdx_z;
+    const auto j = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+    const auto i = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+
+    const rocblas_int ldb = k;
+    const rocblas_stride strideB = rocblas_stride(ldb) * k;
+
+    const bool upper = (uplo == rocblas_fill_upper);
+    const bool lower = (uplo == rocblas_fill_lower);
+
+    if(i < k && j < k)
+    {
+        T* Bp = &tmpV[b * strideB];
+        if(i == j)
+        {
+            Bp[i + j * ldb] = 1;
+        }
+        else if((upper && j > i) || (lower && i > j))
+        {
+            T* Vp = load_ptr_batch<T>(V, b, shiftV, strideV);
+
+            Bp[i + j * ldb] = Vp[i + j * ldv];
+        }
+        else
+        {
+            Bp[i + j * ldb] = 0;
+        }
+    }
+}
+
 template <bool BATCHED, typename T>
 void rocsolver_larfb_getMemorySize(const rocblas_side side,
                                    const rocblas_int m,
@@ -113,6 +152,7 @@ void rocsolver_larfb_getMemorySize(const rocblas_side side,
         *size_tmptr = n;
     else
         *size_tmptr = m;
+    *size_tmptr += k;
     *size_tmptr *= sizeof(T) * k * batch_count;
 
     // size of array of pointers to workspace
@@ -311,6 +351,14 @@ rocblas_status rocsolver_larfb_template(rocblas_handle handle,
     }
     rocblas_stride strideW = rocblas_stride(ldw) * order;
     uploT = (forward ? rocblas_fill_upper : rocblas_fill_lower);
+
+    // copy V1 to tmpV
+    // T* tmpV = tmptr + (ldw * order * batch_count);
+    T* tmpV = tmptr;
+    rocblas_int copyvblocks = (k - 1) / 32 + 1;
+    ROCSOLVER_LAUNCH_KERNEL((copymatV1<T, U>), dim3(copyvblocks, copyvblocks, batch_count),
+                            dim3(32, 32), 0, stream, k, uploV, V, offsetV1,
+                            ldv, strideV, tmpV);
 
     // copy A1 to tmptr
     rocblas_int blocksx = (order - 1) / 32 + 1;
