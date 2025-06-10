@@ -47,11 +47,6 @@ ROCSOLVER_BEGIN_NAMESPACE
 #define DIMX 32
 #define DIMY 32
 
-// Number of warps in x and y; Each warp computes 16x16 block of C
-// NWARPSX * NWARPSY * 64 = DIMX * DIMY
-#define NWARPSX 4
-#define NWARPSY 4
-
 template <typename T, std::enable_if_t<!rocblas_is_complex<T>, int> = 0>
 __device__ __inline__ T shift_left(T& value, int lane_delta)
 {
@@ -165,7 +160,11 @@ __device__ void sb2st_larfg(const I xid, I n, T& alpha, T* x, T& tau, T* reduct)
     }
 }
 
-template <typename T, typename I>
+// Number of warps in x and y; Each warp computes 16x16 block of C
+// NWARPSX * NWARPSY * 64 = DIMX * DIMY
+// #define NWARPSX 4
+// #define NWARPSY 4
+template <uint32_t NWARPSX, uint32_t NWARPSY, typename T, typename I>
 __device__ void
     sb2st_larf(const I xid, const I yid, rocblas_side side, I m, I n, T* v, T tau, T* C, I ldc, T* reduct)
 {
@@ -173,8 +172,8 @@ __device__ void
     using T4 = typename mfma_16x16x4<T>::AccT;
     const I tid = xid + yid * DIMX;
     const I warpid = tid / warpSize;
-    const I warpidx = warpid % NWARPSX;
-    const I warpidy = warpid / NWARPSX;
+    const I warpidx = NWARPSX > 0 ? warpid % NWARPSX : 0;
+    const I warpidy = NWARPSX > 0 ? warpid / NWARPSX : 0;
 
     const I lid = tid % warpSize;
 
@@ -346,6 +345,51 @@ __device__ void
     }
 }
 
+template <typename T, typename I>
+__device__ void sb2st_larf_dispatch(const I xid,
+                                    const I yid,
+                                    rocblas_side side,
+                                    I m,
+                                    I n,
+                                    T* v,
+                                    T tau,
+                                    T* C,
+                                    I ldc,
+                                    T* reduct)
+{
+    constexpr auto NWARPS = DIMX * DIMY / 64;
+    if(side == rocblas_side_left)
+    {
+        if(m <= 16)
+            sb2st_larf<1, NWARPS>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(m <= 32 && NWARPS >= 2)
+            sb2st_larf<2, NWARPS / 2>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(m <= 64 && NWARPS >= 4)
+            sb2st_larf<4, NWARPS / 4>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(m <= 128 && NWARPS >= 8)
+            sb2st_larf<8, NWARPS / 8>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(m <= 256 && NWARPS >= 16)
+            sb2st_larf<16, NWARPS / 16>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else
+            sb2st_larf<0, 0>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+    }
+    else
+    {
+        if(n <= 16)
+            sb2st_larf<NWARPS, 1>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(n <= 32 && NWARPS >= 2)
+            sb2st_larf<NWARPS / 2, 2>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(n <= 64 && NWARPS >= 4)
+            sb2st_larf<NWARPS / 4, 4>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(n <= 128 && NWARPS >= 8)
+            sb2st_larf<NWARPS / 8, 8>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else if(n <= 256 && NWARPS >= 16)
+            sb2st_larf<NWARPS / 16, 16>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+        else
+            sb2st_larf<0, 0>(xid, yid, side, m, n, v, tau, C, ldc, reduct);
+    }
+}
+
 template <typename T, typename S>
 __device__ void sb2st_hb2st_sweep_step(const rocblas_int xid,
                                        const rocblas_int yid,
@@ -397,11 +441,11 @@ __device__ void sb2st_hb2st_sweep_step(const rocblas_int xid,
         if(tau != 0)
         {
             rocblas_int nn = su_e - sm_i;
-            sb2st_larf(xid, yid, rocblas_side_left, mm, nn, housev, conj(tau),
-                       A + sm_i + sm_i * lda, lda, reduct);
+            sb2st_larf_dispatch(xid, yid, rocblas_side_left, mm, nn, housev, conj(tau),
+                                A + sm_i + sm_i * lda, lda, reduct);
             __syncthreads();
-            sb2st_larf(xid, yid, rocblas_side_right, mm, mm, housev, tau, A + sm_i + sm_i * lda,
-                       lda, reduct);
+            sb2st_larf_dispatch(xid, yid, rocblas_side_right, mm, mm, housev, tau,
+                                A + sm_i + sm_i * lda, lda, reduct);
 
             // copy transpose blocks
             nn = su_e - su_i;
@@ -452,11 +496,11 @@ __device__ void sb2st_hb2st_sweep_step(const rocblas_int xid,
         if(tau != 0)
         {
             rocblas_int nn = su_e - sd_i - 1;
-            sb2st_larf(xid, yid, rocblas_side_left, mm, nn, housev, conj(tau),
-                       A + sm_i + (sd_i + 1) * lda, lda, reduct);
+            sb2st_larf_dispatch(xid, yid, rocblas_side_left, mm, nn, housev, conj(tau),
+                                A + sm_i + (sd_i + 1) * lda, lda, reduct);
             __syncthreads();
-            sb2st_larf(xid, yid, rocblas_side_right, mm, mm, housev, tau, A + sm_i + sm_i * lda,
-                       lda, reduct);
+            sb2st_larf_dispatch(xid, yid, rocblas_side_right, mm, mm, housev, tau,
+                                A + sm_i + sm_i * lda, lda, reduct);
 
             // copy transpose blocks
             nn = su_e - su_i;
