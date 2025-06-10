@@ -37,6 +37,7 @@
 
 #include "lapack_device_functions.hpp"
 #include "lib_device_helpers.hpp"
+#include "roclapack_gemm_device_functions.hpp"
 #include "rocsolver_hybrid_storage.hpp"
 
 ROCSOLVER_BEGIN_NAMESPACE
@@ -45,6 +46,11 @@ ROCSOLVER_BEGIN_NAMESPACE
 // Reductions in larfg and larf must be updated if DIMX is changed
 #define DIMX 32
 #define DIMY 32
+
+// Number of warps in x and y; Each warp computes 16x16 block of C
+// NWARPSX * NWARPSY * 64 = DIMX * DIMY
+#define NWARPSX 4
+#define NWARPSY 4
 
 template <typename T, std::enable_if_t<!rocblas_is_complex<T>, int> = 0>
 __device__ __inline__ T shift_left(T& value, int lane_delta)
@@ -163,48 +169,179 @@ template <typename T, typename I>
 __device__ void
     sb2st_larf(const I xid, const I yid, rocblas_side side, I m, I n, T* v, T tau, T* C, I ldc, T* reduct)
 {
+#if ROCSOLVER_MFMA_ENABLED
+    using T4 = typename mfma_16x16x4<T>::AccT;
+    const I tid = xid + yid * DIMX;
+    const I warpid = tid / warpSize;
+    const I warpidx = warpid % NWARPSX;
+    const I warpidy = warpid / NWARPSX;
+
+    const I lid = tid % warpSize;
+
+    const I cmajor_i_16x4 = lid % 16;
+    const I cmajor_j_16x4 = lid / 16;
+
+    const I cmajor_i_4x16 = lid % 4;
+    const I cmajor_j_4x16 = lid / 4;
+
+    const I rmajor_i_4x16 = cmajor_j_16x4;
+    const I rmajor_j_4x16 = cmajor_i_16x4;
+
+    // addresses to transpose B from col-major to row-major
+    // and transpose C from row-major to col-major
+    const auto c2r_src = rmajor_j_4x16 * 4 + rmajor_i_4x16;
+    const auto r2c_src = cmajor_i_4x16 * 16 + cmajor_j_4x16;
+#endif // ROCSOLVER_MFMA_ENABLED
+
     if(side == rocblas_side_left)
     {
-        for(I j = yid; j < n; j += DIMY)
+#if ROCSOLVER_MFMA_ENABLED
+        if(m <= NWARPSX * 16)
         {
-            // gemv reduction
-            T value = 0;
-            for(I i = xid; i < m; i += DIMX)
-                value += conj(C[i + j * ldc]) * v[i];
-            value += shift_left(value, 16);
-            value += shift_left(value, 8);
-            value += shift_left(value, 4);
-            value += shift_left(value, 2);
-            value += shift_left(value, 1);
-            if(xid == 0)
-                reduct[yid] = value;
-            __threadfence();
+            for(I jtr = 0; jtr < n; jtr += NWARPSY * 16)
+            {
+                const I ib = warpidx * 16;
+                const I jb = jtr + warpidy * 16;
+                T4 dmn = {0};
+                if(ib < m && jb < n)
+                {
+                    for(I kb = 0; kb < m; kb += 4)
+                    {
+                        // read A and B in col-major
+                        T amk = 0;
+                        T bkn = 0;
 
-            // ger
-            for(I i = xid; i < m; i += DIMX)
-                C[i + j * ldc] -= tau * v[i] * conj(reduct[yid]);
+                        // load A - read col major 16x4 A
+                        if((ib + cmajor_i_16x4) < m && (kb + cmajor_j_16x4) < m)
+                            amk = v[ib + cmajor_i_16x4] * conj(v[kb + cmajor_j_16x4]);
+
+                        // load B - read col major 4x16 B
+                        if((jb + cmajor_j_4x16) < n && (kb + cmajor_i_4x16) < m)
+                            bkn = C[(jb + cmajor_j_4x16) * ldc + (kb + cmajor_i_4x16)];
+
+                        // transpose B to row major
+                        bkn = shfl(bkn, c2r_src);
+
+                        dmn = mfma_16x16x4<T>()(amk, bkn, dmn);
+                    }
+                }
+
+                __syncthreads();
+
+                if(ib < m && jb < n)
+                {
+#pragma unroll
+                    for(I i = 0; i < 4; ++i)
+                    {
+                        const I c_col = get_c_col<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I c_row = get_c_row<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I idx = (jb + c_col) * ldc + (ib + c_row);
+
+                        // transpose C to col major
+                        dmn[i] = shfl(dmn[i], r2c_src);
+
+                        if((jb + c_col) < n && (ib + c_row) < m)
+                            C[idx] -= tau * dmn[i];
+                    }
+                }
+            }
+        }
+        else
+#endif // ROCSOLVER_MFMA_ENABLED
+        {
+            for(I j = yid; j < n; j += DIMY)
+            {
+                // gemv reduction
+                T value = 0;
+                for(I i = xid; i < m; i += DIMX)
+                    value += conj(C[i + j * ldc]) * v[i];
+                value += shift_left(value, 16);
+                value += shift_left(value, 8);
+                value += shift_left(value, 4);
+                value += shift_left(value, 2);
+                value += shift_left(value, 1);
+                if(xid == 0)
+                    reduct[yid] = value;
+                __threadfence();
+
+                // ger
+                for(I i = xid; i < m; i += DIMX)
+                    C[i + j * ldc] -= tau * v[i] * conj(reduct[yid]);
+            }
         }
     }
     else
     {
-        for(I i = yid; i < m; i += DIMY)
+#if ROCSOLVER_MFMA_ENABLED
+        if(n <= NWARPSY * 16)
         {
-            // gemv reduction
-            T value = 0;
-            for(I j = xid; j < n; j += DIMX)
-                value += C[i + j * ldc] * v[j];
-            value += shift_left(value, 16);
-            value += shift_left(value, 8);
-            value += shift_left(value, 4);
-            value += shift_left(value, 2);
-            value += shift_left(value, 1);
-            if(xid == 0)
-                reduct[yid] = value;
-            __threadfence();
+            for(I itr = 0; itr < m; itr += NWARPSX * 16)
+            {
+                const I ib = itr + warpidx * 16;
+                const I jb = warpidy * 16;
+                T4 dmn = {0};
+                if(ib < m && jb < n)
+                {
+                    for(I kb = 0; kb < n; kb += 4)
+                    {
+                        // read A and B in col-major
+                        T amk = 0;
+                        T bkn = 0;
 
-            // ger
-            for(I j = xid; j < n; j += DIMX)
-                C[i + j * ldc] -= tau * conj(v[j]) * reduct[yid];
+                        // load A - read col major 16x4 A
+                        if((ib + cmajor_i_16x4) < m && (kb + cmajor_j_16x4) < n)
+                            amk = C[(kb + cmajor_j_16x4) * ldc + (ib + cmajor_i_16x4)];
+
+                        // load B - read row major 4x16 B
+                        if((jb + rmajor_j_4x16) < n && (kb + rmajor_i_4x16) < n)
+                            bkn = v[kb + rmajor_i_4x16] * conj(v[jb + rmajor_j_4x16]);
+
+                        dmn = mfma_16x16x4<T>()(amk, bkn, dmn);
+                    }
+                }
+
+                __syncthreads();
+
+                if(ib < m && jb < n)
+                {
+#pragma unroll
+                    for(I i = 0; i < 4; ++i)
+                    {
+                        const I c_col = get_c_col<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I c_row = get_c_row<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I idx = (jb + c_col) * ldc + (ib + c_row);
+
+                        // transpose C to col major
+                        dmn[i] = shfl(dmn[i], r2c_src);
+
+                        if((jb + c_col) < n && (ib + c_row) < m)
+                            C[idx] -= tau * dmn[i];
+                    }
+                }
+            }
+        }
+        else
+#endif // ROCSOLVER_MFMA_ENABLED
+        {
+            for(I i = yid; i < m; i += DIMY)
+            {
+                // gemv reduction
+                T value = 0;
+                for(I j = xid; j < n; j += DIMX)
+                    value += C[i + j * ldc] * v[j];
+                value += shift_left(value, 16);
+                value += shift_left(value, 8);
+                value += shift_left(value, 4);
+                value += shift_left(value, 2);
+                value += shift_left(value, 1);
+                if(xid == 0)
+                    reduct[yid] = value;
+                __threadfence();
+
+                // ger
+                for(I j = xid; j < n; j += DIMX)
+                    C[i + j * ldc] -= tau * conj(v[j]) * reduct[yid];
+            }
         }
     }
 }
