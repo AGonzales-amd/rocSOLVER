@@ -37,11 +37,12 @@
 
 #include "lapack_device_functions.hpp"
 #include "lib_device_helpers.hpp"
+#include "roclapack_gemm_device_functions.hpp"
 #include "rocsolver_hybrid_storage.hpp"
 
 ROCSOLVER_BEGIN_NAMESPACE
 
-#define SB2ST_HB2ST_MAX_THDS 128
+#define SB2ST_HB2ST_MAX_THDS 1024
 
 template <typename T, std::enable_if_t<!rocblas_is_complex<T>, int> = 0>
 __device__ __inline__ T shift_left(T& value, int lane_delta)
@@ -225,6 +226,218 @@ __device__ void
     }
 }
 
+// NWARPS is the number of warps in x and y; Each warp computes 16x16 block of C
+//  - NWARPSX * NWARPSY * 64 = SB2ST_HB2ST_MAX_THDS
+// NBLKS is the number of reflector blocks is computed per warp
+//  - if left side, m <= NWARPSX * NBLKS * 16
+//  - otherwise, n <= NWARPSY * NBLKS * 16
+template <uint32_t NWARPSX, uint32_t NWARPSY, uint32_t NBLKS, typename T, typename I>
+__device__ void sb2st_mfma_larf(const I tid,
+                                const I tid_inc,
+                                rocblas_side side,
+                                I m,
+                                I n,
+                                T* v,
+                                T tau,
+                                T* C,
+                                I ldc,
+                                T* work)
+{
+#if ROCSOLVER_MFMA_ENABLED
+    using T4 = typename mfma_16x16x4<T>::AccT;
+    const I warpid = tid / warpSize;
+    const I warpidx = NWARPSX > 0 ? warpid % NWARPSX : 0;
+    const I warpidy = NWARPSX > 0 ? warpid / NWARPSX : 0;
+
+    const I lid = tid % warpSize;
+
+    const I cmajor_i_16x4 = lid % 16;
+    const I cmajor_j_16x4 = lid / 16;
+
+    const I cmajor_i_4x16 = lid % 4;
+    const I cmajor_j_4x16 = lid / 4;
+
+    const I rmajor_i_4x16 = cmajor_j_16x4;
+    const I rmajor_j_4x16 = cmajor_i_16x4;
+
+    // addresses to transpose B from col-major to row-major
+    // and transpose C from row-major to col-major
+    const auto c2r_src = rmajor_j_4x16 * 4 + rmajor_i_4x16;
+    const auto r2c_src = cmajor_i_4x16 * 16 + cmajor_j_4x16;
+
+    if(side == rocblas_side_left)
+    {
+        for(I jtr = 0; jtr < n; jtr += NWARPSY * 16)
+        {
+            const I ib = warpidx * NBLKS * 16;
+            const I jb = jtr + warpidy * 16;
+            T4 dmn[NBLKS] = {{0}};
+            if(ib < m && jb < n)
+            {
+                for(I kb = 0; kb < m; kb += 4)
+                {
+                    // read A and B in col-major
+                    T amk[NBLKS] = {0};
+                    T bkn = 0;
+
+                    // load A - read col major 16x4 A
+#pragma unroll
+                    for(I b = 0; b < NBLKS; b++)
+                    {
+                        if((ib + (b * 16) + cmajor_i_16x4) < m && (kb + cmajor_j_16x4) < m)
+                            amk[b] = v[ib + (b * 16) + cmajor_i_16x4] * conj(v[kb + cmajor_j_16x4]);
+                    }
+
+                    // load B - read col major 4x16 B
+                    if((jb + cmajor_j_4x16) < n && (kb + cmajor_i_4x16) < m)
+                        bkn = C[(jb + cmajor_j_4x16) * ldc + (kb + cmajor_i_4x16)];
+
+                    // transpose B to row major
+                    bkn = shfl(bkn, c2r_src);
+
+#pragma unroll
+                    for(I b = 0; b < NBLKS; b++)
+                    {
+                        dmn[b] = mfma_16x16x4<T>()(amk[b], bkn, dmn[b]);
+                    }
+                }
+            }
+
+            __syncthreads();
+
+            if(ib < m && jb < n)
+            {
+#pragma unroll
+                for(I b = 0; b < NBLKS; b++)
+                {
+#pragma unroll
+                    for(I i = 0; i < 4; ++i)
+                    {
+                        const I c_col = get_c_col<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I c_row = get_c_row<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I idx = (jb + c_col) * ldc + (ib + (b * 16) + c_row);
+
+                        // transpose C to col major
+                        dmn[b][i] = shfl(dmn[b][i], r2c_src);
+
+                        if((jb + c_col) < n && (ib + (b * 16) + c_row) < m)
+                            C[idx] -= tau * dmn[b][i];
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        for(I itr = 0; itr < m; itr += NWARPSX * 16)
+        {
+            const I ib = itr + warpidx * 16;
+            const I jb = warpidy * NBLKS * 16;
+            T4 dmn[NBLKS] = {{0}};
+            if(ib < m && jb < n)
+            {
+                for(I kb = 0; kb < n; kb += 4)
+                {
+                    // read A and B in col-major
+                    T amk = 0;
+                    T bkn[NBLKS] = {0};
+
+                    // load A - read col major 16x4 A
+                    if((ib + cmajor_i_16x4) < m && (kb + cmajor_j_16x4) < n)
+                        amk = C[(kb + cmajor_j_16x4) * ldc + (ib + cmajor_i_16x4)];
+
+                    // load B - read row major 4x16 B
+#pragma unroll
+                    for(I b = 0; b < NBLKS; b++)
+                    {
+                        if((jb + (b * 16) + rmajor_j_4x16) < n && (kb + rmajor_i_4x16) < n)
+                            bkn[b] = v[kb + rmajor_i_4x16] * conj(v[jb + (b * 16) + rmajor_j_4x16]);
+                    }
+
+#pragma unroll
+                    for(I b = 0; b < NBLKS; b++)
+                    {
+                        dmn[b] = mfma_16x16x4<T>()(amk, bkn[b], dmn[b]);
+                    }
+                }
+            }
+
+            __syncthreads();
+
+            if(ib < m && jb < n)
+            {
+#pragma unroll
+                for(I b = 0; b < NBLKS; b++)
+                {
+#pragma unroll
+                    for(I i = 0; i < 4; ++i)
+                    {
+                        const I c_col = get_c_col<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I c_row = get_c_row<T>(cmajor_i_4x16, cmajor_j_4x16, i, 1, ldc);
+                        const I idx = (jb + (b * 16) + c_col) * ldc + (ib + c_row);
+
+                        // transpose C to col major
+                        dmn[b][i] = shfl(dmn[b][i], r2c_src);
+
+                        if((jb + (b * 16) + c_col) < n && (ib + c_row) < m)
+                            C[idx] -= tau * dmn[b][i];
+                    }
+                }
+            }
+        }
+    }
+#endif // ROCSOLVER_MFMA_ENABLED
+}
+
+template <typename T, typename I>
+__device__ void sb2st_larf_dispatch(const I tid,
+                                    const I tid_inc,
+                                    rocblas_side side,
+                                    I m,
+                                    I n,
+                                    T* v,
+                                    T tau,
+                                    T* C,
+                                    I ldc,
+                                    T* work)
+{
+    constexpr auto NWARPS = SB2ST_HB2ST_MAX_THDS / 64;
+    if(side == rocblas_side_left)
+    {
+        if(ROCSOLVER_MFMA_ENABLED && m <= 16)
+            sb2st_mfma_larf<1, NWARPS, 1>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && m <= 32)
+            sb2st_mfma_larf<1, NWARPS, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && m <= 64 && NWARPS >= 2)
+            sb2st_mfma_larf<2, NWARPS / 2, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && m <= 128 && NWARPS >= 4)
+            sb2st_mfma_larf<4, NWARPS / 4, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && m <= 256 && NWARPS >= 8)
+            sb2st_mfma_larf<8, NWARPS / 8, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && m <= 512 && NWARPS >= 16)
+            sb2st_mfma_larf<16, NWARPS / 16, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else
+            sb2st_larf(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+    }
+    else
+    {
+        if(ROCSOLVER_MFMA_ENABLED && n <= 16)
+            sb2st_mfma_larf<NWARPS, 1, 1>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && n <= 32)
+            sb2st_mfma_larf<NWARPS, 1, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && n <= 64 && NWARPS >= 2)
+            sb2st_mfma_larf<NWARPS / 2, 2, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && n <= 128 && NWARPS >= 48)
+            sb2st_mfma_larf<NWARPS / 4, 4, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && n <= 256 && NWARPS >= 8)
+            sb2st_mfma_larf<NWARPS / 8, 8, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else if(ROCSOLVER_MFMA_ENABLED && n <= 512 && NWARPS >= 16)
+            sb2st_mfma_larf<NWARPS / 16, 16, 2>(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+        else
+            sb2st_larf(tid, tid_inc, side, m, n, v, tau, C, ldc, work);
+    }
+}
+
 template <int MAX_THDS, typename T, typename S>
 __device__ void sb2st_hb2st_sweep_step(const rocblas_int tid,
                                        rocblas_int n,
@@ -271,10 +484,10 @@ __device__ void sb2st_hb2st_sweep_step(const rocblas_int tid,
 
         // apply Householder reflector
         rocblas_int nn = su_e - sm_i;
-        sb2st_larf(tid, MAX_THDS, rocblas_side_left, mm, nn, housev, conj(tau),
+        sb2st_larf_dispatch(tid, MAX_THDS, rocblas_side_left, mm, nn, housev, conj(tau),
                    A + sm_i + sm_i * lda, lda, work);
         __syncthreads();
-        sb2st_larf(tid, MAX_THDS, rocblas_side_right, mm, mm, housev, tau, A + sm_i + sm_i * lda,
+        sb2st_larf_dispatch(tid, MAX_THDS, rocblas_side_right, mm, mm, housev, tau, A + sm_i + sm_i * lda,
                    lda, work);
         __syncthreads();
 
@@ -323,10 +536,10 @@ __device__ void sb2st_hb2st_sweep_step(const rocblas_int tid,
 
         // apply Householder reflector
         rocblas_int nn = su_e - sd_i - 1;
-        sb2st_larf(tid, MAX_THDS, rocblas_side_left, mm, nn, housev, conj(tau),
+        sb2st_larf_dispatch(tid, MAX_THDS, rocblas_side_left, mm, nn, housev, conj(tau),
                    A + sm_i + (sd_i + 1) * lda, lda, work);
         __syncthreads();
-        sb2st_larf(tid, MAX_THDS, rocblas_side_right, mm, mm, housev, tau, A + sm_i + sm_i * lda,
+        sb2st_larf_dispatch(tid, MAX_THDS, rocblas_side_right, mm, mm, housev, tau, A + sm_i + sm_i * lda,
                    lda, work);
         __syncthreads();
 
