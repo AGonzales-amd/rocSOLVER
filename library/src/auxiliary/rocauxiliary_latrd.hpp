@@ -550,6 +550,107 @@ ROCSOLVER_KERNEL void latrd_upper_updateA_kernel(const rocblas_int mm,
     }
 }
 
+template <int NB_X, int NB_Y, typename T, typename U>
+ROCSOLVER_KERNEL void latrd_upper_updateA_gemvn_kernel(const rocblas_int mm,
+                                                 const rocblas_int k,
+                                                 const rocblas_int c,
+                                                 U AA,
+                                                 const rocblas_int shiftA,
+                                                 const rocblas_int lda,
+                                                 const rocblas_stride strideA,
+                                                 T* WA,
+                                                 const rocblas_int shiftW,
+                                                 const rocblas_int ldw,
+                                                 const rocblas_stride strideW)
+{
+    rocblas_int bid = blockIdx.z;
+    rocblas_int tx  = threadIdx.x;
+    rocblas_int ty  = threadIdx.y;
+    rocblas_int i = NB_X * blockIdx.x + tx;
+
+    T* A = load_ptr_batch<T>(AA, bid, shiftA, strideA);
+    T* W = load_ptr_batch<T>(WA, bid, shiftW, strideW);
+
+    int n = mm - c - 1;
+    int m = c + 1;
+    int cw = c - mm + k;
+    T* y = A + idx2D(0, c, lda);
+    T* A1 = A + idx2D(0, c + 1, lda);
+    int lda1 = lda;
+    T* A2 = W + idx2D(0, cw + 1, ldw);
+    int lda2 = ldw;
+    T* x1 = W + idx2D(c, cw + 1, ldw);
+    int incx1 = ldw;
+    T* x2 = A + idx2D(c, c + 1, lda);
+    int incx2 = lda;
+
+    T* a1 = A1 + i;
+    T* a2 = A2 + i;
+    if(ty < n)
+    {
+        a1 += ty * size_t(lda1);
+        a2 += ty * size_t(lda2);
+        x1 += ty * size_t(incx1);
+        x2 += ty * size_t(incx2);
+    }
+
+    T res = 0;
+
+    __shared__ T xdata[2 * NB_Y];
+    T* sx1 = xdata;
+    T* sx2 = sx1 + NB_Y;
+    __shared__ T sdata[NB_X * NB_Y];
+    T* sreduc = sdata + tx * NB_Y;
+
+    // partial sums
+    rocblas_int n_full = (n / NB_Y) * NB_Y;
+
+    // y = y - A1 * x1' - A2 * x2'
+    for(rocblas_int j = 0; j < n_full; j += NB_Y)
+    {
+        if(tx == 0)
+        {
+            sx1[ty] = conj(x1[j * incx1]);
+            sx2[ty] = conj(x2[j * incx2]);
+        }
+
+        __syncthreads();
+
+        if(i < m)
+            res += a1[j * lda1] * sx1[ty] + a2[j * lda2] * sx2[ty];
+    }
+
+    if(tx == 0 && (ty + n_full < n))
+    {
+        sx1[ty] = conj(x1[n_full * incx1]);
+        sx2[ty] = conj(x2[n_full * incx2]);
+    }
+
+    __syncthreads();
+
+    if(i < m && ty + n_full < n)
+        res += a1[n_full * lda1] * sx1[ty] + a2[n_full * lda2] * sx2[ty];
+
+    sreduc[ty] = res;
+    __syncthreads();
+
+    // tree reduction of partial sums
+    for(int r = NB_Y / 2; r > 0; r /= 2)
+    {
+        if(ty < r)
+        {
+            res += sreduc[ty + r];
+            sreduc[ty] = res;
+        }
+        __syncthreads();
+    }
+
+    if(i < m && ty == 0)
+    {
+        y[i] -= res;
+    }
+}
+
 template <typename T, typename U>
 ROCSOLVER_KERNEL void latrd_lower_updateA_kernel(const rocblas_int mm,
                                                  const rocblas_int c,
@@ -656,6 +757,105 @@ ROCSOLVER_KERNEL void latrd_lower_updateA_kernel(const rocblas_int mm,
         // write results
         if(tidc == 0 && i < m)
             y[i] = ac;
+    }
+}
+
+template <int NB_X, int NB_Y, typename T, typename U>
+ROCSOLVER_KERNEL void latrd_lower_updateA_gemvn_kernel(const rocblas_int mm,
+                                                 const rocblas_int c,
+                                                 U AA,
+                                                 const rocblas_int shiftA,
+                                                 const rocblas_int lda,
+                                                 const rocblas_stride strideA,
+                                                 T* WA,
+                                                 const rocblas_int shiftW,
+                                                 const rocblas_int ldw,
+                                                 const rocblas_stride strideW)
+{
+    rocblas_int bid = blockIdx.z;
+    rocblas_int tx  = threadIdx.x;
+    rocblas_int ty  = threadIdx.y;
+    rocblas_int i = NB_X * blockIdx.x + tx;
+
+    T* A = load_ptr_batch<T>(AA, bid, shiftA, strideA);
+    T* W = load_ptr_batch<T>(WA, bid, shiftW, strideW);
+
+    int m = mm - c;
+    int n = c;
+    T* y = A + idx2D(c, c, lda);
+    T* A1 = A + idx2D(c, 0, lda);
+    int lda1 = lda;
+    T* A2 = W + idx2D(c, 0, ldw);
+    int lda2 = ldw;
+    T* x1 = W + idx2D(c, 0, ldw);
+    int incx1 = ldw;
+    T* x2 = A + idx2D(c, 0, lda);
+    int incx2 = lda;
+
+    T* a1 = A1 + i;
+    T* a2 = A2 + i;
+    if(ty < n)
+    {
+        a1 += ty * size_t(lda1);
+        a2 += ty * size_t(lda2);
+        x1 += ty * size_t(incx1);
+        x2 += ty * size_t(incx2);
+    }
+
+    T res = 0;
+
+    __shared__ T xdata[2 * NB_Y];
+    T* sx1 = xdata;
+    T* sx2 = sx1 + NB_Y;
+    __shared__ T sdata[NB_X * NB_Y];
+    T* sreduc = sdata + tx * NB_Y;
+
+    // partial sums
+    rocblas_int n_full = (n / NB_Y) * NB_Y;
+
+    // y = y - A1 * x1' - A2 * x2'
+    for(rocblas_int j = 0; j < n_full; j += NB_Y)
+    {
+        if(tx == 0)
+        {
+            sx1[ty] = conj(x1[j * incx1]);
+            sx2[ty] = conj(x2[j * incx2]);
+        }
+
+        __syncthreads();
+
+        if(i < m)
+            res += a1[j * lda1] * sx1[ty] + a2[j * lda2] * sx2[ty];
+    }
+
+    if(tx == 0 && (ty + n_full < n))
+    {
+        sx1[ty] = conj(x1[n_full * incx1]);
+        sx2[ty] = conj(x2[n_full * incx2]);
+    }
+
+    __syncthreads();
+
+    if(i < m && ty + n_full < n)
+        res += a1[n_full * lda1] * sx1[ty] + a2[n_full * lda2] * sx2[ty];
+
+    sreduc[ty] = res;
+    __syncthreads();
+
+    // tree reduction of partial sums
+    for(int r = NB_Y / 2; r > 0; r /= 2)
+    {
+        if(ty < r)
+        {
+            res += sreduc[ty + r];
+            sreduc[ty] = res;
+        }
+        __syncthreads();
+    }
+
+    if(i < m && ty == 0)
+    {
+        y[i] -= res;
     }
 }
 
@@ -2158,9 +2358,12 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
         {
             // update column j of A with reflector computed in step j-1
             //----------------------------------------------------------
-            ROCSOLVER_LAUNCH_KERNEL(latrd_lower_updateA_kernel<T>,
-                                    dim3(grr_updates, grc_updates, batch_count),
-                                    dim3(thr_updates, thc_updates, 1), lmemsize_updates, stream, n,
+            static constexpr int UA_NBX = 8;
+            static constexpr int UA_NBY = 64;
+            dim3                 gemvn_grid((n - j + UA_NBX - 1) / UA_NBX, 1, batch_count);
+            dim3                 gemvn_threads(UA_NBX, UA_NBY);
+            ROCSOLVER_LAUNCH_KERNEL((latrd_lower_updateA_gemvn_kernel<UA_NBX, UA_NBY, T>),
+                                    gemvn_grid, gemvn_threads, 0, stream, n,
                                     j, A, shiftA, lda, strideA, W, shiftW, ldw, strideW);
             //-------------------------------------------------------------
 
@@ -2214,9 +2417,12 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
 
             // update column j of A with reflector computed in step j-1
             //----------------------------------------------------------
-            ROCSOLVER_LAUNCH_KERNEL(latrd_upper_updateA_kernel<T>,
-                                    dim3(grr_updates, grc_updates, batch_count),
-                                    dim3(thr_updates, thc_updates, 1), lmemsize_updates, stream, n,
+            static constexpr int UA_NBX = 8;
+            static constexpr int UA_NBY = 64;
+            dim3                 gemvn_grid((j + 1 + UA_NBX - 1) / UA_NBX, 1, batch_count);
+            dim3                 gemvn_threads(UA_NBX, UA_NBY);
+            ROCSOLVER_LAUNCH_KERNEL((latrd_upper_updateA_gemvn_kernel<UA_NBX, UA_NBY, T>),
+                                    gemvn_grid, gemvn_threads, 0, stream, n,
                                     k, j, A, shiftA, lda, strideA, W, shiftW, ldw, strideW);
             //-------------------------------------------------------------
 
