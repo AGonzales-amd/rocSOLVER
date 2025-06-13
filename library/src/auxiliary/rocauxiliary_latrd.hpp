@@ -596,40 +596,21 @@ ROCSOLVER_KERNEL void latrd_upper_updateA_gemvn_kernel(const rocblas_int mm,
 
     T res = 0;
 
-    __shared__ T xdata[2 * NB_Y];
-    T* sx1 = xdata;
-    T* sx2 = sx1 + NB_Y;
     __shared__ T sdata[NB_X * NB_Y];
     T* sreduc = sdata + tx * NB_Y;
 
     // partial sums
     rocblas_int n_full = (n / NB_Y) * NB_Y;
 
-    // y = y - A1 * x1' - A2 * x2'
-    for(rocblas_int j = 0; j < n_full; j += NB_Y)
+    if(i < m)
     {
-        if(tx == 0)
-        {
-            sx1[ty] = conj(x1[j * incx1]);
-            sx2[ty] = conj(x2[j * incx2]);
-        }
+        // y = y - A1 * x1' - A2 * x2'
+        for(rocblas_int j = 0; j < n_full; j += NB_Y)
+            res += a1[j * lda1] * conj(x1[j * incx1]) + a2[j * lda2] * conj(x2[j * incx2]);
 
-        __syncthreads();
-
-        if(i < m)
-            res += a1[j * lda1] * sx1[ty] + a2[j * lda2] * sx2[ty];
+        if(ty + n_full < n)
+            res += a1[n_full * lda1] * conj(x1[n_full * incx1]) + a2[n_full * lda2] * conj(x2[n_full * incx2]);
     }
-
-    if(tx == 0 && (ty + n_full < n))
-    {
-        sx1[ty] = conj(x1[n_full * incx1]);
-        sx2[ty] = conj(x2[n_full * incx2]);
-    }
-
-    __syncthreads();
-
-    if(i < m && ty + n_full < n)
-        res += a1[n_full * lda1] * sx1[ty] + a2[n_full * lda2] * sx2[ty];
 
     sreduc[ty] = res;
     __syncthreads();
@@ -804,40 +785,21 @@ ROCSOLVER_KERNEL void latrd_lower_updateA_gemvn_kernel(const rocblas_int mm,
 
     T res = 0;
 
-    __shared__ T xdata[2 * NB_Y];
-    T* sx1 = xdata;
-    T* sx2 = sx1 + NB_Y;
     __shared__ T sdata[NB_X * NB_Y];
     T* sreduc = sdata + tx * NB_Y;
 
     // partial sums
     rocblas_int n_full = (n / NB_Y) * NB_Y;
 
-    // y = y - A1 * x1' - A2 * x2'
-    for(rocblas_int j = 0; j < n_full; j += NB_Y)
+    if(i < m)
     {
-        if(tx == 0)
-        {
-            sx1[ty] = conj(x1[j * incx1]);
-            sx2[ty] = conj(x2[j * incx2]);
-        }
+        // y = y - A1 * x1' - A2 * x2'
+        for(rocblas_int j = 0; j < n_full; j += NB_Y)
+            res += a1[j * lda1] * conj(x1[j * incx1]) + a2[j * lda2] * conj(x2[j * incx2]);
 
-        __syncthreads();
-
-        if(i < m)
-            res += a1[j * lda1] * sx1[ty] + a2[j * lda2] * sx2[ty];
+        if(ty + n_full < n)
+            res += a1[n_full * lda1] * conj(x1[n_full * incx1]) + a2[n_full * lda2] * conj(x2[n_full * incx2]);
     }
-
-    if(tx == 0 && (ty + n_full < n))
-    {
-        sx1[ty] = conj(x1[n_full * incx1]);
-        sx2[ty] = conj(x2[n_full * incx2]);
-    }
-
-    __syncthreads();
-
-    if(i < m && ty + n_full < n)
-        res += a1[n_full * lda1] * sx1[ty] + a2[n_full * lda2] * sx2[ty];
 
     sreduc[ty] = res;
     __syncthreads();
