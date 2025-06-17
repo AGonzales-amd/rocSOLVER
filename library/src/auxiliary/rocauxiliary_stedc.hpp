@@ -47,11 +47,6 @@ ROCSOLVER_BEGIN_NAMESPACE
 #define STEDC_BDIM 512 // Number of threads per thread-block used in main stedc kernels
 #define MAXITERS 50 // Max number of iterations for root finding method
 
-// TODO: using macro STEDC_EXTERNAL_GEMM = true for now. In the future we can pass
-// STEDC_EXTERNAL_GEMM at run time to switch between internal vector updates and
-// external gemm-based updates.
-#define STEDC_EXTERNAL_GEMM false
-
 #define STEDC_INTERNAL_GEMM_BLOCK_K 24
 
 typedef enum rocsolver_stedc_mode_
@@ -1780,154 +1775,140 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             bool go = (j < ns[tid]);
             S* putvec = USEGEMM ? vecs : temps;
 
-                    // compute vectors of rank-1 perturbed system and their norms
-                    nrm = 0;
-                    if(go && idd[p2 + j] == 1)
-                    {
-                        for(int i = tidb; i < dd; i += dim)
-                        {
-                            valf = zz[i] / temps[i + (p2 + j) * n];
-                            nrm += valf * valf;
-                            putvec[i + (p2 + j) * n] = valf;
-                        }
-                        inrms[tidb] = nrm;
-                    }
-                    __syncthreads();
-
-                    // reduction (for the norms)
-                    for(int r = dim / 2; r > 0; r /= 2)
-                    {
-                        if(tidb < r && go && idd[p2 + j] == 1)
-                        {
-                            nrm += inrms[tidb + r];
-                            inrms[tidb] = nrm;
-                        }
-                        __syncthreads();
-                    }
-                    
-                    if(go && idd[p2 + j] == 1)
-                        nrm = sqrt(inrms[0]);
-
-                if(USEGEMM)
+            // compute vectors of rank-1 perturbed system and their norms
+            nrm = 0;
+            if(go && idd[p2 + j] == 1)
+            {
+                for(int i = tidb; i < dd; i += dim)
                 {
-                    // when using external gemms for the update, we need to
-                    // put vectors in padded matrix 'temps'
-                    // (this is to compute 'vecs = C * temps' using external gemm call)
-                    if(go)
+                    valf = zz[i] / temps[i + (p2 + j) * n];
+                    nrm += valf * valf;
+                    putvec[i + (p2 + j) * n] = valf;
+                }
+                inrms[tidb] = nrm;
+            }
+            __syncthreads();
+
+            // reduction (for the norms)
+            for(int r = dim / 2; r > 0; r /= 2)
+            {
+                if(tidb < r && go && idd[p2 + j] == 1)
+                {
+                    nrm += inrms[tidb + r];
+                    inrms[tidb] = nrm;
+                }
+                __syncthreads();
+            }
+
+            if(go && idd[p2 + j] == 1)
+                nrm = sqrt(inrms[0]);
+
+            if(USEGEMM)
+            {
+                // when using external gemms for the update, we need to
+                // put vectors in padded matrix 'temps'
+                // (this is to compute 'vecs = C * temps' using external gemm call)
+                if(go)
+                {
+                    for(int i = tidb; i < in + sz; i += dim)
                     {
-                        for(int i = tidb; i < in + sz; i += dim)
+                        if(i >= in && idd[p2 + j] == 1 && idd[i] == 1)
                         {
-                            if(i >= in && idd[p2 + j] == 1 && idd[i] == 1)
+                            dd = 0;
+                            for(int k = in; k < i; ++k)
                             {
-                                dd = 0;
-                                for(int k = in; k < i; ++k)
-                                {
-                                    if(idd[k] == 0)
-                                        dd++;
-                                }
-                                temps[pers[i - dd] + in + (p2 + j) * n]
-                                    = vecs[i - dd - in + (p2 + j) * n] / nrm;
+                                if(idd[k] == 0)
+                                    dd++;
                             }
-                            else
-                                temps[i + (p2 + j) * n] = 0;
+                            temps[pers[i - dd] + in + (p2 + j) * n]
+                                = vecs[i - dd - in + (p2 + j) * n] / nrm;
                         }
+                        else
+                            temps[i + (p2 + j) * n] = 0;
                     }
                 }
-                else
+            }
+            else
+            {
+                // otherwise, use internal gemm-like procedure to
+
+                __syncthreads();
+
+                // load (16 * nwarps) x K C block
+                // load K x 16 temps block
+                // load and write (16 * nwarps) x 16 vecs block
+                // where K = STEDC_INTERNAL_GEMM_BLOCK_K
+
+                for(int tii = 0; tii < tsz; tii += tile_dim_m)
                 {
-                    // otherwise, use internal gemm-like procedure to
-
-                    __syncthreads();
-
-                    // load (16 * nwarps) x K C block
-                    // load K x 16 temps block
-                    // load and write (16 * nwarps) x 16 vecs block
-                    // where K = STEDC_INTERNAL_GEMM_BLOCK_K
-
-                    for(int tii = 0; tii < tsz; tii += tile_dim_m)
+                    for(int x = tidb; x < tile_dim_m; x += dim)
                     {
-                        for(int x = tidb; x < tile_dim_m; x += dim)
-                        {
-                            rocblas_int ii = tii + x;
-                            rocblas_int i  = in + ii;
+                        vecs_lds[x + tile_dim_m * vidg] = 0;
+                    }
 
-                            vecs_lds[x + tile_dim_m * vidg] = 0;
+                    for(int tkk = 0; tkk < dd; tkk += STEDC_INTERNAL_GEMM_BLOCK_K)
+                    {
+                        // load STEDC_INTERNAL_GEMM_BLOCK_K x 16 block of temps to lds
+                        for(int kk = tidb; kk < STEDC_INTERNAL_GEMM_BLOCK_K; kk += dim)
+                        {
+                            rocblas_int k = tkk + kk;
+
+                            S val = 0;
+                            if(k < dd && go && idd[p2 + j] == 1)
+                                val = temps[k + (p2 + j) * n];
+
+                            temps_lds[kk + STEDC_INTERNAL_GEMM_BLOCK_K * vidg] = val;
                         }
 
-                        for(int tkk = 0; tkk < dd; tkk += STEDC_INTERNAL_GEMM_BLOCK_K)
+                        // load (16 * nwarps) x STEDC_INTERNAL_GEMM_BLOCK_K block of C to lds
+                        for(int w = 0; w < nwarps; ++w)
                         {
-                            // load STEDC_INTERNAL_GEMM_BLOCK_K x 16 block of temps to lds
+                            rocblas_int ii = tii + (w * 16) + vidg;
+                            rocblas_int i = in + ii;
+
+                            // load 16 x STEDC_INTERNAL_GEMM_BLOCK_K block of C to lds
                             for(int kk = tidb; kk < STEDC_INTERNAL_GEMM_BLOCK_K; kk += dim)
                             {
                                 rocblas_int k = tkk + kk;
 
                                 S val = 0;
-                                if(k < dd && go && idd[p2 + j] == 1)
-                                    val = temps[k + (p2 + j) * n];
-                                
-                                temps_lds[kk + STEDC_INTERNAL_GEMM_BLOCK_K * vidg] = val;
+                                if(k < dd && ii < sz)
+                                    val = C[i + (per[k] + in) * ldc];
+
+                                C_lds[(w * 16 + vidg) + tile_dim_m * kk] = val;
                             }
-
-                            // load (16 * nwarps) x STEDC_INTERNAL_GEMM_BLOCK_K block of C to lds
-                            for(int w = 0; w < nwarps; ++w)
-                            {
-                                rocblas_int ii = tii + (w * 16) + vidg;
-                                rocblas_int i  = in + ii;
-
-                                // load 16 x STEDC_INTERNAL_GEMM_BLOCK_K block of C to lds
-                                for(int kk = tidb; kk < STEDC_INTERNAL_GEMM_BLOCK_K; kk += dim)
-                                {
-                                    rocblas_int k = tkk + kk;
-
-                                    S val = 0;
-                                    if(k < dd && ii < sz)
-                                        val = C[i + (per[k] + in) * ldc];
-                                    
-                                    C_lds[(w * 16 + vidg) + tile_dim_m * kk] = val;
-                                }
-                            }
-
-                            __syncthreads();
-
-#if ROCSOLVER_MFMA_ENABLED
-                            // call gemm
-                            gemm_16x16xp(rocblas_operation_none,
-                                         rocblas_operation_none,
-                                         rocblas_int(16),
-                                         rocblas_int(16),
-                                         STEDC_INTERNAL_GEMM_BLOCK_K,
-                                         S(1),
-                                         C_lds + (warp_idx * 16),
-                                         rocblas_int(1),
-                                         tile_dim_m,
-                                         temps_lds,
-                                         rocblas_int(1),
-                                         STEDC_INTERNAL_GEMM_BLOCK_K,
-                                         S(1),
-                                         vecs_lds + (warp_idx * 16),
-                                         rocblas_int(1),
-                                         tile_dim_m);
-#endif
-
-                            __syncthreads();
                         }
 
                         __syncthreads();
 
-                        // write to vecs from lds
-                        // write (16 * nwarps) x 16 block of vecs from lds
-                        for(int x = tidb; x < tile_dim_m; x += dim)
-                        {
-                            rocblas_int ii = tii + x;
-                            rocblas_int i  = in + ii;
+#if ROCSOLVER_MFMA_ENABLED
+                        // call gemm
+                        gemm_16x16xp(rocblas_operation_none, rocblas_operation_none,
+                                     rocblas_int(16), rocblas_int(16), STEDC_INTERNAL_GEMM_BLOCK_K,
+                                     S(1), C_lds + (warp_idx * 16), rocblas_int(1), tile_dim_m,
+                                     temps_lds, rocblas_int(1), STEDC_INTERNAL_GEMM_BLOCK_K, S(1),
+                                     vecs_lds + (warp_idx * 16), rocblas_int(1), tile_dim_m);
+#endif
+                        // TODO: implement a non mfma gemm for general use.
 
-                            S val = vecs_lds[x + tile_dim_m * vidg];
-                            if(ii < sz && go && idd[p2 + j] == 1)
-                                vecs[i + (p2 + j) * n] = val / nrm;
-                        }
+                        __syncthreads();
+                    }
 
+                    __syncthreads();
+
+                    // write to vecs from lds
+                    // write (16 * nwarps) x 16 block of vecs from lds
+                    for(int x = tidb; x < tile_dim_m; x += dim)
+                    {
+                        rocblas_int ii = tii + x;
+                        rocblas_int i = in + ii;
+
+                        S val = vecs_lds[x + tile_dim_m * vidg];
+                        if(ii < sz && go && idd[p2 + j] == 1)
+                            vecs[i + (p2 + j) * n] = val / nrm;
                     }
                 }
+            }
         }
     }
 }
@@ -2487,10 +2468,26 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
         hipDeviceProp_t deviceProperties;
         HIP_CHECK(hipGetDeviceProperties(&deviceProperties, device));
 
+        const bool stedc_external_gemm = !is_mfma_enabled();
+        
+        const auto warpSize = deviceProperties.warpSize;
+        rocblas_int nwarps = STEDC_BDIM / warpSize;
+
+        rocblas_int tile_dim_m = 16 * nwarps;
+        rocblas_int tile_dim_n = 16;
+
         size_t lmemsize1 = sizeof(S) * 2 * STEDC_BDIM;
-        size_t lmemsize3 = STEDC_EXTERNAL_GEMM ? (sizeof(S) * STEDC_BDIM) : deviceProperties.sharedMemPerBlock;
+        size_t lmemsize3 = stedc_external_gemm ? (sizeof(S) * STEDC_BDIM)
+                                               : sizeof(S)
+                * std::max(STEDC_BDIM,
+                           tile_dim_m * tile_dim_n
+                               + (tile_dim_m + tile_dim_n) * STEDC_INTERNAL_GEMM_BLOCK_K);
         size_t lmemsize4 = sizeof(S) * STEDC_BDIM;
-        // rocblas_int numgrps3 = (((n - 15) / 16 + 1) / maxblks + 1) * maxblks;
+
+        if(lmemsize3 > deviceProperties.sharedMemPerBlock)
+        {
+            return rocblas_status_internal_error;
+        }
 
         // each sub-block will be split into groups of 16 vectors
         rocblas_int sblk_size = (n - 1) / maxblks + 1;
@@ -2521,19 +2518,23 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
                                     E + shiftE, strideE, tmpz, tempgemm, splits, eps, ssfmin, ssfmax);
 
             // c. find merged eigen vectors
-            ROCSOLVER_LAUNCH_KERNEL(
-                (stedc_mergeVectors_kernel<rocsolver_stedc_mode_qr, STEDC_EXTERNAL_GEMM, S>),
-                dim3(numgrps3, STEDC_NUM_SPLIT_BLKS, batch_count), dim3(STEDC_BDIM), lmemsize3,
-                stream, k, n, D + shiftD, strideD, E + shiftE, strideE, V, 0, ldv, strideV, tmpz,
-                tempgemm, splits);
+            if(stedc_external_gemm)
+                ROCSOLVER_LAUNCH_KERNEL(
+                    (stedc_mergeVectors_kernel<rocsolver_stedc_mode_qr, true, S>),
+                    dim3(numgrps3, STEDC_NUM_SPLIT_BLKS, batch_count), dim3(STEDC_BDIM), lmemsize3,
+                    stream, k, n, D + shiftD, strideD, E + shiftE, strideE, V, 0, ldv, strideV, tmpz,
+                    tempgemm, splits);
+            else
+                ROCSOLVER_LAUNCH_KERNEL(
+                    (stedc_mergeVectors_kernel<rocsolver_stedc_mode_qr, false, S>),
+                    dim3(numgrps3, STEDC_NUM_SPLIT_BLKS, batch_count), dim3(STEDC_BDIM), lmemsize3,
+                    stream, k, n, D + shiftD, strideD, E + shiftE, strideE, V, 0, ldv, strideV, tmpz,
+                    tempgemm, splits);
 
-            if(STEDC_EXTERNAL_GEMM)
+            if(stedc_external_gemm)
             {
                 // using external gemms with padded matrices to do the vector update
                 // One single full gemm of size n x n x n merges all the blocks in the level
-                // TODO: using macro STEDC_EXTERNAL_GEMM = true for now. In the future we can pass
-                // STEDC_EXTERNAL_GEMM at run time to switch between internal vector updates and
-                // external gemm based updates.
                 rocsolver_gemm(handle, rocblas_operation_none, rocblas_operation_none, n, n, n,
                                &one, V, 0, ldv, strideV, tempgemm, n * n, n, 2 * n * n, &zero,
                                tempgemm, 0, n, 2 * n * n, batch_count, workArr);
