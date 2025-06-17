@@ -241,12 +241,7 @@ ROCSOLVER_EXPORT rocblas_status rocsolver_gemm(rocblas_handle handle,
     hipDeviceProp_t deviceProperties;
     HIP_CHECK(hipGetDeviceProperties(&deviceProperties, device));
 
-    std::string deviceArch(deviceProperties.gcnArchName);
-
-    if((deviceArch.find("gfx90a") != std::string::npos)
-       || (deviceArch.find("gfx940") != std::string::npos)
-       || (deviceArch.find("gfx941") != std::string::npos)
-       || (deviceArch.find("gfx942") != std::string::npos))
+    if(is_mfma_enabled())
     {
         const auto warpSize = deviceProperties.warpSize;
 
