@@ -1875,6 +1875,198 @@ ROCSOLVER_KERNEL void latrd_lower_updateW_kernel(const rocblas_int mm,
     }
 }
 
+template <int MAX_THDS, typename T, typename I, typename S, typename U>
+ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
+    latrd_lower_kernel_small(const I n,
+                             const I k,
+                             U AA,
+                             const rocblas_stride shiftA,
+                             const I lda,
+                             const rocblas_stride strideA,
+                             S* EE,
+                             const rocblas_stride strideE,
+                             T* tauA,
+                             const rocblas_stride strideP,
+                             T* WW,
+                             const rocblas_stride shiftW,
+                             const I ldw,
+                             const rocblas_stride strideW)
+{
+    I bid = blockIdx.z;
+    I tid = threadIdx.x;
+
+    // select batch instance
+    T* A = load_ptr_batch<T>(AA, bid, shiftA, strideA);
+    T* W = load_ptr_batch<T>(WW, bid, shiftW, strideW);
+    S* E = load_ptr_batch<S>(EE, bid, 0, strideE);
+    T* tau = load_ptr_batch<T>(tauA, bid, 0, strideP);
+
+    // shared variables
+    extern __shared__ double lmem[];
+    T* tmptau = reinterpret_cast<T*>(lmem);
+    T* x = reinterpret_cast<T*>(tmptau + 1);
+    T* sval = reinterpret_cast<T*>(x + n);
+
+    // reduce the lower part of A
+    // main loop running forwards (for each column)
+    for(I j = 0; j < k; ++j)
+    {
+        I nn = n - j - 1;
+
+        // update A(i:n-1, i) -= A(i:n-1, 0:i-1) * W(i, 0:i-1)' + W(i:n-1, 0:i-1) * A(i, 0:i-1)'
+        for(I i = tid; i < n - j; i += MAX_THDS)
+        {
+            T temp = 0;
+            for(I jj = 0; jj < i; jj++)
+            {
+                temp += A[(j + i) + jj * lda] * conj(W[j + jj * ldw]) + W[(j + i) + jj * ldw] * conj(A[j + jj * lda]);
+            }
+
+            A[(j + i) + j * lda] = A[(j + i) + j * lda] - temp;
+        }
+        __syncthreads();
+
+        // larfg to annihilate A(i+2:n-1, i)
+        // load A(j+1:n-1,j) into x
+        for(I i = tid; i < nn; i += MAX_THDS)
+            x[i] = A[(i + j + 1) + j * lda];
+        __syncthreads();
+
+        // larfg
+        T norm2 = 0;
+        for(I i = tid; i < nn - 1; i += MAX_THDS)
+            norm2 += x[i + 1] * conj(x[i + 1]);
+
+        // reduce squared entries to find squared norm of x
+        norm2 += shift_left(norm2, 1);
+        norm2 += shift_left(norm2, 2);
+        norm2 += shift_left(norm2, 4);
+        norm2 += shift_left(norm2, 8);
+        norm2 += shift_left(norm2, 16);
+        if(warpSize > 32)
+            norm2 += shift_left(norm2, 32);
+        if(tid % warpSize == 0)
+            sval[tid / warpSize] = norm2;
+        __syncthreads();
+        if(tid == 0)
+        {
+            for(I k = 1; k < MAX_THDS / warpSize; k++)
+                norm2 += sval[k];
+
+            // set tau, beta, and put scaling factor into sval[0]
+            run_set_taubeta<T>(tmptau, &norm2, x, E + j);
+
+            tau[j] = tmptau[0];
+            sval[0] = norm2;
+        }
+        __syncthreads();
+
+        // scale x by scaling factor
+        for(I i = tid; i < nn - 1; i += MAX_THDS)
+            x[i + 1] *= sval[0];
+        __syncthreads();
+
+        // copy x back to A(j+1:n-1,j)
+        for(I i = tid; i < nn; i += MAX_THDS)
+            A[(i + j + 1) + j * lda] = x[i];
+        __syncthreads();
+
+        // W(i,i) = 0
+        if(tid == 0)
+            W[j + j * ldw] = 0;
+        __syncthreads();
+
+        // compute W(i+1:n-1, i)
+        // - W(i+1:n-1, i) = A(i+1:n-1, i+1:n-1)' * A(i+1:n-1, i)
+        for(I i = tid; i < nn; i += MAX_THDS)
+        {
+            T temp = 0;
+            for(I jj = 0; jj < nn; jj++)
+            {
+                // temp += (i < j ? conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) : A[(j + 1 + i) + (j + 1 + jj) * lda])
+                //         * A[(j + 1 + jj) + j * lda];
+                temp += A[(j + 1 + jj) + (j + 1 + i) * lda] * A[(j + 1 + jj) + j * lda];
+            }
+            W[(j + 1 + i) + j * ldw] = temp;
+        }
+        __syncthreads();
+
+        // - tmp = W(0:i-1, i) = W(i+1:n-1, 0:i-1)' * A(i+1:n-1, i)
+        for(I i = tid; i < j; i += MAX_THDS)
+        {
+            T temp = 0;
+            for(I jj = 0; jj < nn; jj++)
+            {
+                temp += conj(W[(j + 1 + jj) + i * ldw]) * A[(j + 1 + jj) + j * lda];
+            }
+            W[i + j * ldw] = temp;
+        }
+        __syncthreads();
+
+        // - W(i+1:n-1, i) -= A(i+1:n-1, 0:i-1) * tmp
+        for(I i = tid; i < nn; i += MAX_THDS)
+        {
+            T temp = 0;
+            for(I jj = 0; jj < j; jj++)
+            {
+                temp += A[(j + 1 + i) + jj * lda] * W[jj + j * ldw];
+            }
+            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] - temp;
+        }
+        __syncthreads();
+
+        // - tmp = A(i+1:n-1, 0:i-1)' * A(i+1:n-1, i)
+        for(I i = tid; i < j; i += MAX_THDS)
+        {
+            T temp = 0;
+            for(I jj = 0; jj < nn; jj++)
+            {
+                temp += conj(A[(j + 1 + jj) + i * lda]) * A[(j + 1 + jj) + j * lda];
+            }
+            W[i + j * ldw] = temp;
+        }
+        __syncthreads();
+
+        // - W(i+1:n-1, i) -=  W(i+1:n-1, 0:i-1) * tmp
+        for(I i = tid; i < nn; i += MAX_THDS)
+        {
+            T temp = 0;
+            for(I jj = 0; jj < j; jj++)
+            {
+                temp += W[(j + 1 + i) + jj * ldw] * W[jj + j * ldw];
+            }
+            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] - temp;
+        }
+        __syncthreads();
+
+        // scale  W(i+1:n-1, i) *= tau(i)
+        for(I i = tid; i < nn; i += MAX_THDS)
+        {
+            W[(j + 1 + i) + j * ldw] = tmptau[0] * W[(j + 1 + i) + j * ldw];
+        }
+        __syncthreads();
+
+        // compute alpha = -1/2 * tau(i) * W(i+1:n-1, i)' * A(i+1:n-1, i)
+        if(tid == 0)
+        {
+            T dot = 0;
+            for(I i = 0; i < nn; i++)
+            {
+                dot = conj(W[(j + 1 + i) + j * ldw]) * A[(j + 1 + i) + j * lda];
+            }
+            sval[0] = -.5 * tmptau[0] * dot;
+        }
+        __syncthreads();
+
+        // compute W(i+1:n-1, i) += alpha * A(i+1:n-1, i)
+        for(I i = tid; i < nn; i += MAX_THDS)
+        {
+            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] + sval[0] * A[(j + 1 + i) + j * lda];
+        }
+        __syncthreads();
+    }
+}
+
 /******************* Host functions for latrd aux of sytrd **********************/
 /********************************************************************************/
 
@@ -2012,8 +2204,25 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
 
     rocblas_stride strideblk = k;
 
+    // get device prop
+    int device;
+    HIP_CHECK(hipGetDevice(&device));
+    hipDeviceProp_t props;
+    HIP_CHECK(hipGetDeviceProperties(&props, device));
+
     if(uplo == rocblas_fill_lower)
     {
+        const size_t lmemsize = ((256 / props.warpSize) + 1 + n) * sizeof(T);
+        if(lmemsize <= props.sharedMemPerBlock && n <= 512)
+        {
+            std::cout << "running kernel" << std::endl;
+            ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<256, T>), dim3(1, 1, batch_count),
+                                    dim3(256), lmemsize, stream, n, k, A,
+                                    shiftA, lda, strideA, E, strideE,
+                                    tau, strideP, W, shiftW, ldw, strideW);
+        }
+        else
+        {
         // reduce the first k columns of A
         // main loop running forwards (for each column)
         for(rocblas_int j = 0; j < k; ++j)
@@ -2056,6 +2265,7 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
                                     shiftA + idx2D(j + 1, j, lda), strideA, W,
                                     shiftW + idx2D(j + 1, j, ldw), strideW, tau + j, strideP);
             //--------------------------------------------------------------
+        }
         }
     }
 
