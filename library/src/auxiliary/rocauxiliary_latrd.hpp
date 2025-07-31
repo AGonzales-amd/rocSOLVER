@@ -1917,7 +1917,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         for(I i = tid; i < n - j; i += MAX_THDS)
         {
             T temp = 0;
-            for(I jj = 0; jj < i; jj++)
+            for(I jj = 0; jj < j; jj++)
             {
                 temp += A[(j + i) + jj * lda] * conj(W[j + jj * ldw]) + W[(j + i) + jj * ldw] * conj(A[j + jj * lda]);
             }
