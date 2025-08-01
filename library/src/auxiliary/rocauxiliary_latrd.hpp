@@ -1919,7 +1919,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T temp = 0;
             for(I jj = 0; jj < j; jj++)
             {
-                temp += A[(j + i) + jj * lda] * conj(W[j + jj * ldw]) + W[(j + i) + jj * ldw] * conj(A[j + jj * lda]);
+                temp += A[(j + i) + jj * lda] * conj(W[j + jj * ldw])
+                    + W[(j + i) + jj * ldw] * conj(A[j + jj * lda]);
             }
 
             A[(j + i) + j * lda] = A[(j + i) + j * lda] - temp;
@@ -1969,12 +1970,10 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         // copy x back to A(j+1:n-1,j)
         for(I i = tid; i < nn; i += MAX_THDS)
             A[(i + j + 1) + j * lda] = x[i];
-        __syncthreads();
 
         // W(i,i) = 0
         if(tid == 0)
             W[j + j * ldw] = 0;
-        __syncthreads();
 
         // compute W(i+1:n-1, i)
         // - W(i+1:n-1, i) = A(i+1:n-1, i+1:n-1)' * A(i+1:n-1, i)
@@ -1983,9 +1982,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T temp = 0;
             for(I jj = 0; jj < nn; jj++)
             {
-                // temp += (i < j ? conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) : A[(j + 1 + i) + (j + 1 + jj) * lda])
-                //         * A[(j + 1 + jj) + j * lda];
-                temp += conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) * A[(j + 1 + jj) + j * lda];
+                temp += conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) * x[jj];
             }
             W[(j + 1 + i) + j * ldw] = temp;
         }
@@ -1997,7 +1994,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T temp = 0;
             for(I jj = 0; jj < nn; jj++)
             {
-                temp += conj(W[(j + 1 + jj) + i * ldw]) * A[(j + 1 + jj) + j * lda];
+                temp += conj(W[(j + 1 + jj) + i * ldw]) * x[jj];
             }
             W[i + j * ldw] = temp;
         }
@@ -2021,7 +2018,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T temp = 0;
             for(I jj = 0; jj < nn; jj++)
             {
-                temp += conj(A[(j + 1 + jj) + i * lda]) * A[(j + 1 + jj) + j * lda];
+                temp += conj(A[(j + 1 + jj) + i * lda]) * x[jj];
             }
             W[i + j * ldw] = temp;
         }
@@ -2047,21 +2044,34 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         __syncthreads();
 
         // compute alpha = -1/2 * tau(i) * W(i+1:n-1, i)' * A(i+1:n-1, i)
+        T dotp = 0;
+        for(I i = tid; i < nn; i += MAX_THDS)
+            dotp += conj(W[(j + 1 + i) + j * ldw]) * x[i];
+
+        // reduce sum of products to find total value
+        dotp += shift_left(dotp, 1);
+        dotp += shift_left(dotp, 2);
+        dotp += shift_left(dotp, 4);
+        dotp += shift_left(dotp, 8);
+        dotp += shift_left(dotp, 16);
+        if(warpSize > 32)
+            dotp += shift_left(dotp, 32);
+        if(tid % warpSize == 0)
+            sval[tid / warpSize] = dotp;
+        __syncthreads();
         if(tid == 0)
         {
-            T dot = 0;
-            for(I i = 0; i < nn; i++)
-            {
-                dot += conj(W[(j + 1 + i) + j * ldw]) * A[(j + 1 + i) + j * lda];
-            }
-            sval[0] = -.5 * tmptau[0] * dot;
+            for(I k = 1; k < MAX_THDS / warpSize; k++)
+                dotp += sval[k];
+
+            sval[0] = -0.5 * tmptau[0] * dotp;
         }
         __syncthreads();
 
         // compute W(i+1:n-1, i) += alpha * A(i+1:n-1, i)
         for(I i = tid; i < nn; i += MAX_THDS)
         {
-            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] + sval[0] * A[(j + 1 + i) + j * lda];
+            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] + sval[0] * x[i];
         }
         __syncthreads();
     }
@@ -2217,55 +2227,54 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
         {
             std::cout << "running kernel" << std::endl;
             ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<256, T>), dim3(1, 1, batch_count),
-                                    dim3(256), lmemsize, stream, n, k, A,
-                                    shiftA, lda, strideA, E, strideE,
-                                    tau, strideP, W, shiftW, ldw, strideW);
+                                    dim3(256), lmemsize, stream, n, k, A, shiftA, lda, strideA, E,
+                                    strideE, tau, strideP, W, shiftW, ldw, strideW);
         }
         else
         {
-        // reduce the first k columns of A
-        // main loop running forwards (for each column)
-        for(rocblas_int j = 0; j < k; ++j)
-        {
-            // update column j of A with reflector computed in step j-1
-            //----------------------------------------------------------
-            ROCSOLVER_LAUNCH_KERNEL(latrd_lower_updateA_kernel<T>,
-                                    dim3(grr_updates, grc_updates, batch_count),
-                                    dim3(thr_updates, thc_updates, 1), lmemsize_updates, stream, n,
-                                    j, A, shiftA, lda, strideA, W, shiftW, ldw, strideW);
-            //-------------------------------------------------------------
+            // reduce the first k columns of A
+            // main loop running forwards (for each column)
+            for(rocblas_int j = 0; j < k; ++j)
+            {
+                // update column j of A with reflector computed in step j-1
+                //----------------------------------------------------------
+                ROCSOLVER_LAUNCH_KERNEL(latrd_lower_updateA_kernel<T>,
+                                        dim3(grr_updates, grc_updates, batch_count),
+                                        dim3(thr_updates, thc_updates, 1), lmemsize_updates, stream,
+                                        n, j, A, shiftA, lda, strideA, W, shiftW, ldw, strideW);
+                //-------------------------------------------------------------
 
-            // reduce column j of A with new reflector, then copy off-diagonal element
-            // to E(j) and set off-diagonal to 1
-            //----------------------------------------------------------
-            rocsolver_larfg_template(handle, n - j - 1, A, shiftA + idx2D(j + 1, j, lda), E, j,
-                                     strideE, A, shiftA + idx2D(std::min(j + 2, n - 1), j, lda), 1,
-                                     strideA, (tau + j), strideP, batch_count, work, norms);
-            //-----------------------------------------------------------
+                // reduce column j of A with new reflector, then copy off-diagonal element
+                // to E(j) and set off-diagonal to 1
+                //----------------------------------------------------------
+                rocsolver_larfg_template(handle, n - j - 1, A, shiftA + idx2D(j + 1, j, lda), E, j,
+                                         strideE, A, shiftA + idx2D(std::min(j + 2, n - 1), j, lda),
+                                         1, strideA, (tau + j), strideP, batch_count, work, norms);
+                //-----------------------------------------------------------
 
-            // compute column j of W
-            //--------------------------------------------------------------
-            static constexpr int NB = 256;
-            dim3 gemvt_grid(n + j, 1, batch_count);
-            dim3 gemvt_threads(NB);
-            ROCSOLVER_LAUNCH_KERNEL((latrd_lower_computeW_gemvt_kernel<NB, T>), gemvt_grid,
-                                    gemvt_threads, 0, stream, n, j, A, shiftA, lda, strideA, W,
-                                    shiftW, ldw, strideW, W, shiftW + idx2D(0, j, ldw), ldw,
-                                    strideW, work, strideblk);
+                // compute column j of W
+                //--------------------------------------------------------------
+                static constexpr int NB = 256;
+                dim3 gemvt_grid(n + j, 1, batch_count);
+                dim3 gemvt_threads(NB);
+                ROCSOLVER_LAUNCH_KERNEL((latrd_lower_computeW_gemvt_kernel<NB, T>), gemvt_grid,
+                                        gemvt_threads, 0, stream, n, j, A, shiftA, lda, strideA, W,
+                                        shiftW, ldw, strideW, W, shiftW + idx2D(0, j, ldw), ldw,
+                                        strideW, work, strideblk);
 
-            // update column j of W
-            //--------------------------------------------------------------
-            ROCSOLVER_LAUNCH_KERNEL(
-                latrd_lower_updateW_kernel<T>, dim3(grr_updates, grc_updates, batch_count),
-                dim3(thr_updates, thc_updates, 1), lmemsize_updates, stream, n, j, A, shiftA, lda,
-                strideA, W, shiftW, ldw, strideW, work, strideblk, tau, strideP);
+                // update column j of W
+                //--------------------------------------------------------------
+                ROCSOLVER_LAUNCH_KERNEL(
+                    latrd_lower_updateW_kernel<T>, dim3(grr_updates, grc_updates, batch_count),
+                    dim3(thr_updates, thc_updates, 1), lmemsize_updates, stream, n, j, A, shiftA,
+                    lda, strideA, W, shiftW, ldw, strideW, work, strideblk, tau, strideP);
 
-            ROCSOLVER_LAUNCH_KERNEL((latrd_dot_scale_axpy<1024, T>), dim3(1, 1, batch_count),
-                                    dim3(1024, 1, 1), 0, stream, n - 1 - j, A,
-                                    shiftA + idx2D(j + 1, j, lda), strideA, W,
-                                    shiftW + idx2D(j + 1, j, ldw), strideW, tau + j, strideP);
-            //--------------------------------------------------------------
-        }
+                ROCSOLVER_LAUNCH_KERNEL((latrd_dot_scale_axpy<1024, T>), dim3(1, 1, batch_count),
+                                        dim3(1024, 1, 1), 0, stream, n - 1 - j, A,
+                                        shiftA + idx2D(j + 1, j, lda), strideA, W,
+                                        shiftW + idx2D(j + 1, j, ldw), strideW, tau + j, strideP);
+                //--------------------------------------------------------------
+            }
         }
     }
 
