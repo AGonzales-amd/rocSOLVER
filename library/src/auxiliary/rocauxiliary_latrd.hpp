@@ -1895,6 +1895,10 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
     I bid = blockIdx.z;
     I tid = threadIdx.x;
 
+    I nwarps = MAX_THDS / warpSize;
+    I lid = tid % warpSize;
+    I wid = tid / warpSize;
+
     // select batch instance
     T* A = load_ptr_batch<T>(AA, bid, shiftA, strideA);
     T* W = load_ptr_batch<T>(WW, bid, shiftW, strideW);
@@ -1982,26 +1986,48 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
 
         // compute W(i+1:n-1, i)
         // - W(i+1:n-1, i) = A(i+1:n-1, i+1:n-1)' * A(i+1:n-1, i)
-        for(I i = tid; i < nn; i += MAX_THDS)
+        for(I i = wid; i < nn; i += nwarps)
         {
             T temp = 0;
-            for(I jj = 0; jj < nn; jj++)
+            for(I jj = lid; jj < nn; jj += warpSize)
             {
                 temp += conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) * x[jj];
             }
-            w[j + 1 + i] = temp;
+
+            // reduce warp
+            temp += shift_left(temp, 1);
+            temp += shift_left(temp, 2);
+            temp += shift_left(temp, 4);
+            temp += shift_left(temp, 8);
+            temp += shift_left(temp, 16);
+            if(warpSize > 32)
+                temp += shift_left(temp, 32);
+
+            if(lid == 0)
+                w[j + 1 + i] = temp;
         }
         __syncthreads();
 
         // - tmp = W(0:i-1, i) = W(i+1:n-1, 0:i-1)' * A(i+1:n-1, i)
-        for(I i = tid; i < j; i += MAX_THDS)
+        for(I i = wid; i < j; i += nwarps)
         {
             T temp = 0;
-            for(I jj = 0; jj < nn; jj++)
+            for(I jj = lid; jj < nn; jj += warpSize)
             {
                 temp += conj(W[(j + 1 + jj) + i * ldw]) * x[jj];
             }
-            w[i] = temp;
+
+            // reduce warp
+            temp += shift_left(temp, 1);
+            temp += shift_left(temp, 2);
+            temp += shift_left(temp, 4);
+            temp += shift_left(temp, 8);
+            temp += shift_left(temp, 16);
+            if(warpSize > 32)
+                temp += shift_left(temp, 32);
+
+            if(lid == 0)
+                w[i] = temp;
         }
         __syncthreads();
 
@@ -2018,14 +2044,25 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         __syncthreads();
 
         // - tmp = A(i+1:n-1, 0:i-1)' * A(i+1:n-1, i)
-        for(I i = tid; i < j; i += MAX_THDS)
+        for(I i = wid; i < j; i += nwarps)
         {
             T temp = 0;
-            for(I jj = 0; jj < nn; jj++)
+            for(I jj = lid; jj < nn; jj += warpSize)
             {
                 temp += conj(A[(j + 1 + jj) + i * lda]) * x[jj];
             }
-            w[i] = temp;
+
+            // reduce warp
+            temp += shift_left(temp, 1);
+            temp += shift_left(temp, 2);
+            temp += shift_left(temp, 4);
+            temp += shift_left(temp, 8);
+            temp += shift_left(temp, 16);
+            if(warpSize > 32)
+                temp += shift_left(temp, 32);
+
+            if(lid == 0)
+                w[i] = temp;
         }
         __syncthreads();
 
