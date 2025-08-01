@@ -2223,9 +2223,8 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
     if(uplo == rocblas_fill_lower)
     {
         const size_t lmemsize = ((256 / props.warpSize) + 1 + n) * sizeof(T);
-        if(lmemsize <= props.sharedMemPerBlock && n <= 512)
+        if(lmemsize <= props.sharedMemPerBlock && n < 2048)
         {
-            std::cout << "running kernel" << std::endl;
             ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<256, T>), dim3(1, 1, batch_count),
                                     dim3(256), lmemsize, stream, n, k, A, shiftA, lda, strideA, E,
                                     strideE, tau, strideP, W, shiftW, ldw, strideW);
