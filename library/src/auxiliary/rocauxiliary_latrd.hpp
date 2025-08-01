@@ -1985,7 +1985,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             {
                 // temp += (i < j ? conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) : A[(j + 1 + i) + (j + 1 + jj) * lda])
                 //         * A[(j + 1 + jj) + j * lda];
-                temp += A[(j + 1 + jj) + (j + 1 + i) * lda] * A[(j + 1 + jj) + j * lda];
+                temp += conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) * A[(j + 1 + jj) + j * lda];
             }
             W[(j + 1 + i) + j * ldw] = temp;
         }
@@ -2052,7 +2052,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T dot = 0;
             for(I i = 0; i < nn; i++)
             {
-                dot = conj(W[(j + 1 + i) + j * ldw]) * A[(j + 1 + i) + j * lda];
+                dot += conj(W[(j + 1 + i) + j * ldw]) * A[(j + 1 + i) + j * lda];
             }
             sval[0] = -.5 * tmptau[0] * dot;
         }
