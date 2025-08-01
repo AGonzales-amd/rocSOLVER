@@ -1905,7 +1905,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
     extern __shared__ double lmem[];
     T* tmptau = reinterpret_cast<T*>(lmem);
     T* x = reinterpret_cast<T*>(tmptau + 1);
-    T* sval = reinterpret_cast<T*>(x + n);
+    T* w = reinterpret_cast<T*>(x + n);
+    T* sval = reinterpret_cast<T*>(w + n);
 
     // reduce the lower part of A
     // main loop running forwards (for each column)
@@ -1923,17 +1924,21 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
                     + W[(j + i) + jj * ldw] * conj(A[j + jj * lda]);
             }
 
-            A[(j + i) + j * lda] = A[(j + i) + j * lda] - temp;
+            T val = A[(j + i) + j * lda] - temp;
+
+            // load A(j+1:n-1,j) into x for larfg
+            if(i > 0)
+            {
+                x[i - 1] = val;
+            }
+            else
+            {
+                A[j + j * lda] = val;
+            }
         }
         __syncthreads();
 
         // larfg to annihilate A(i+2:n-1, i)
-        // load A(j+1:n-1,j) into x
-        for(I i = tid; i < nn; i += MAX_THDS)
-            x[i] = A[(i + j + 1) + j * lda];
-        __syncthreads();
-
-        // larfg
         T norm2 = 0;
         for(I i = tid; i < nn - 1; i += MAX_THDS)
             norm2 += x[i + 1] * conj(x[i + 1]);
@@ -1971,9 +1976,9 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         for(I i = tid; i < nn; i += MAX_THDS)
             A[(i + j + 1) + j * lda] = x[i];
 
-        // W(i,i) = 0
-        if(tid == 0)
-            W[j + j * ldw] = 0;
+        // // W(i,i) = 0
+        // if(tid == 0)
+        //     w[j] = 0;
 
         // compute W(i+1:n-1, i)
         // - W(i+1:n-1, i) = A(i+1:n-1, i+1:n-1)' * A(i+1:n-1, i)
@@ -1984,7 +1989,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             {
                 temp += conj(A[(j + 1 + jj) + (j + 1 + i) * lda]) * x[jj];
             }
-            W[(j + 1 + i) + j * ldw] = temp;
+            w[j + 1 + i] = temp;
         }
         __syncthreads();
 
@@ -1996,7 +2001,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             {
                 temp += conj(W[(j + 1 + jj) + i * ldw]) * x[jj];
             }
-            W[i + j * ldw] = temp;
+            w[i] = temp;
         }
         __syncthreads();
 
@@ -2006,9 +2011,9 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T temp = 0;
             for(I jj = 0; jj < j; jj++)
             {
-                temp += A[(j + 1 + i) + jj * lda] * W[jj + j * ldw];
+                temp += A[(j + 1 + i) + jj * lda] * w[jj];
             }
-            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] - temp;
+            w[j + 1 + i] -= temp;
         }
         __syncthreads();
 
@@ -2020,7 +2025,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             {
                 temp += conj(A[(j + 1 + jj) + i * lda]) * x[jj];
             }
-            W[i + j * ldw] = temp;
+            w[i] = temp;
         }
         __syncthreads();
 
@@ -2030,23 +2035,27 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
             T temp = 0;
             for(I jj = 0; jj < j; jj++)
             {
-                temp += W[(j + 1 + i) + jj * ldw] * W[jj + j * ldw];
+                temp += W[(j + 1 + i) + jj * ldw] * w[jj];
             }
-            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] - temp;
+            w[j + 1 + i] -= temp;
         }
         __syncthreads();
 
         // scale  W(i+1:n-1, i) *= tau(i)
         for(I i = tid; i < nn; i += MAX_THDS)
         {
-            W[(j + 1 + i) + j * ldw] = tmptau[0] * W[(j + 1 + i) + j * ldw];
+            w[j + 1 + i] *= tmptau[0];
         }
         __syncthreads();
+
+        // // copy tmp and diag back to W(0:i, i)
+        // for(I i = tid; i <= j; i += MAX_THDS)
+        //     W[i + j * ldw] = w[i];
 
         // compute alpha = -1/2 * tau(i) * W(i+1:n-1, i)' * A(i+1:n-1, i)
         T dotp = 0;
         for(I i = tid; i < nn; i += MAX_THDS)
-            dotp += conj(W[(j + 1 + i) + j * ldw]) * x[i];
+            dotp += conj(w[j + 1 + i]) * x[i];
 
         // reduce sum of products to find total value
         dotp += shift_left(dotp, 1);
@@ -2071,7 +2080,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         // compute W(i+1:n-1, i) += alpha * A(i+1:n-1, i)
         for(I i = tid; i < nn; i += MAX_THDS)
         {
-            W[(j + 1 + i) + j * ldw] = W[(j + 1 + i) + j * ldw] + sval[0] * x[i];
+            W[(j + 1 + i) + j * ldw] = w[j + 1 + i] + sval[0] * x[i];
         }
         __syncthreads();
     }
@@ -2222,7 +2231,7 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
 
     if(uplo == rocblas_fill_lower)
     {
-        const size_t lmemsize = ((256 / props.warpSize) + 1 + n) * sizeof(T);
+        const size_t lmemsize = ((256 / props.warpSize) + 1 + 2 * n) * sizeof(T);
         if(lmemsize <= props.sharedMemPerBlock && n < 2048)
         {
             ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<256, T>), dim3(1, 1, batch_count),
