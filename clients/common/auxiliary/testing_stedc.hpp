@@ -116,7 +116,7 @@ void stedc_clement_initData(const rocblas_handle handle,
     if(CPU)
     {
         rocblas_init<T>(hC, true);
-
+        
         for(rocblas_int b = 0; b < bc; ++b)
         {
             // New matrix initialization
@@ -859,8 +859,8 @@ void testing_stedc(Arguments& argus)
             rocsolver_bench_header("Results:");
             if(argus.norm_check)
             {
-                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "error");
-                rocsolver_bench_output(cpu_time_used, gpu_time_used, std::max(max_err, max_errv));
+                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "errorD", "errorV");
+                rocsolver_bench_output(cpu_time_used, gpu_time_used, max_err, max_errv);
             }
             else
             {
@@ -872,7 +872,7 @@ void testing_stedc(Arguments& argus)
         else
         {
             if(argus.norm_check)
-                rocsolver_bench_output(gpu_time_used, std::max(max_err, max_errv));
+                rocsolver_bench_output(gpu_time_used, max_err, max_errv);
             else
                 rocsolver_bench_output(gpu_time_used);
         }
