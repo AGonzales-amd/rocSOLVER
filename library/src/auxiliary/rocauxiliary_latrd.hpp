@@ -1918,27 +1918,51 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
     {
         I nn = n - j - 1;
 
+        // load A and W into lds for update A
+        for(I i = tid; i < j; i += MAX_THDS)
+        {
+            // write to x[nn:nn+i-1]
+            x[nn + i] = A[j + i * lda];
+
+            // write to w[0:i-1]
+            w[i] = W[j + i * ldw];
+        }
+        __syncthreads();
+
         // update A(i:n-1, i) -= A(i:n-1, 0:i-1) * W(i, 0:i-1)' + W(i:n-1, 0:i-1) * A(i, 0:i-1)'
-        for(I i = tid; i < n - j; i += MAX_THDS)
+        // - compute A(i, i)
+        if(wid == 0)
+        {
+            T temp = 0;
+            for(I jj = lid; jj < j; jj += warpSize)
+            {
+                temp += x[nn + jj] * conj(w[jj]) + w[jj] * conj(x[nn + jj]);
+            }
+
+            // reduce warp
+            temp += shift_left(temp, 1);
+            temp += shift_left(temp, 2);
+            temp += shift_left(temp, 4);
+            temp += shift_left(temp, 8);
+            temp += shift_left(temp, 16);
+            if(warpSize > 32)
+                temp += shift_left(temp, 32);
+
+            if(lid == 0)
+                A[j + j * lda] -= temp;
+        }
+
+        // - compute A(i+1:n-1, i)
+        for(I i = tid; i < nn; i += MAX_THDS)
         {
             T temp = 0;
             for(I jj = 0; jj < j; jj++)
             {
-                temp += A[(j + i) + jj * lda] * conj(W[j + jj * ldw])
-                    + W[(j + i) + jj * ldw] * conj(A[j + jj * lda]);
+                temp += A[(j + 1 + i) + jj * lda] * conj(w[jj])
+                    + W[(j + 1 + i) + jj * ldw] * conj(x[nn + jj]);
             }
 
-            T val = A[(j + i) + j * lda] - temp;
-
-            // load A(j+1:n-1,j) into x for larfg
-            if(i > 0)
-            {
-                x[i - 1] = val;
-            }
-            else
-            {
-                A[j + j * lda] = val;
-            }
+            x[i] = A[(j + 1 + i) + j * lda] - temp;
         }
         __syncthreads();
 
@@ -2268,11 +2292,11 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
 
     if(uplo == rocblas_fill_lower)
     {
-        const size_t lmemsize = ((256 / props.warpSize) + 1 + 2 * n) * sizeof(T);
+        const size_t lmemsize = ((1024 / props.warpSize) + 1 + 2 * n) * sizeof(T);
         if(lmemsize <= props.sharedMemPerBlock && n < 2048)
         {
-            ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<256, T>), dim3(1, 1, batch_count),
-                                    dim3(256), lmemsize, stream, n, k, A, shiftA, lda, strideA, E,
+            ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<1024, T>), dim3(1, 1, batch_count),
+                                    dim3(1024), lmemsize, stream, n, k, A, shiftA, lda, strideA, E,
                                     strideE, tau, strideP, W, shiftW, ldw, strideW);
         }
         else
