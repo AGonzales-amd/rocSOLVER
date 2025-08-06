@@ -2109,7 +2109,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         }
         __syncthreads();
 
-        // // copy tmp and diag back to W(0:i, i)
+        // // copy lds back to W(0:i, i)
         // for(I i = tid; i <= j; i += MAX_THDS)
         //     W[i + j * ldw] = w[i];
 
@@ -2292,19 +2292,23 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
 
     if(uplo == rocblas_fill_lower)
     {
-        const size_t lmemsize = ((1024 / props.warpSize) + 1 + 2 * n) * sizeof(T);
-        if(lmemsize <= props.sharedMemPerBlock && n < 2048)
-        {
-            ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<1024, T>), dim3(1, 1, batch_count),
-                                    dim3(1024), lmemsize, stream, n, k, A, shiftA, lda, strideA, E,
-                                    strideE, tau, strideP, W, shiftW, ldw, strideW);
-        }
-        else
         {
             // reduce the first k columns of A
             // main loop running forwards (for each column)
             for(rocblas_int j = 0; j < k; ++j)
             {
+                const rocblas_int nn = n - j;
+                const size_t lmemsize = ((1024 / props.warpSize) + 1 + 2 * nn) * sizeof(T);
+                if(lmemsize <= props.sharedMemPerBlock && nn < 96)
+                {
+                    ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<1024, T>),
+                                            dim3(1, 1, batch_count), dim3(1024), lmemsize, stream,
+                                            nn, k - j, A, shiftA + idx2D(j, j, lda), lda, strideA,
+                                            E + j, strideE, tau + j, strideP, W,
+                                            shiftW + idx2D(j, j, ldw), ldw, strideW);
+                    break;
+                }
+
                 // update column j of A with reflector computed in step j-1
                 //----------------------------------------------------------
                 ROCSOLVER_LAUNCH_KERNEL(latrd_lower_updateA_kernel<T>,
