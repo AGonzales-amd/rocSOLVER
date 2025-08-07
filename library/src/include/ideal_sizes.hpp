@@ -239,7 +239,7 @@
     the rest of the matrix has no more than xxTRD_xxTD2_SWITCHSIZE rows or columns; at this point the last block,
     if any, will be reduced with the unblocked algorithm (SYTD2/HETD2).*/
 #ifndef xxTRD_xxTD2_SWITCHSIZE
-#define xxTRD_xxTD2_SWITCHSIZE 256
+#define xxTRD_xxTD2_SWITCHSIZE 128
 #endif
 
 /***************** sygs2/sygst and hegs2/hegst ********************************

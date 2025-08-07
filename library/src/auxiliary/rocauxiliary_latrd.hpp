@@ -1879,6 +1879,7 @@ template <int MAX_THDS, typename T, typename I, typename S, typename U>
 ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
     latrd_lower_kernel_small(const I n,
                              const I k,
+                             const I itr,
                              U AA,
                              const rocblas_stride shiftA,
                              const I lda,
@@ -1914,14 +1915,14 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
 
     // reduce the lower part of A
     // main loop running forwards (for each column)
-    for(I j = 0; j < k; ++j)
+    for(I j = itr; j < k; ++j)
     {
         I nn = n - j - 1;
 
         // load A and W into lds for update A
         for(I i = tid; i < j; i += MAX_THDS)
         {
-            // write to x[nn:nn+i-1]
+            // write to x[nn:n-1]
             x[nn + i] = A[j + i * lda];
 
             // write to w[0:i-1]
@@ -2298,14 +2299,13 @@ rocblas_status rocsolver_latrd_forsytrd_template(rocblas_handle handle,
             for(rocblas_int j = 0; j < k; ++j)
             {
                 const rocblas_int nn = n - j;
-                const size_t lmemsize = ((1024 / props.warpSize) + 1 + 2 * nn) * sizeof(T);
+                const size_t lmemsize = ((1024 / props.warpSize) + 1 + 2 * n) * sizeof(T);
                 if(lmemsize <= props.sharedMemPerBlock && nn < 96)
                 {
                     ROCSOLVER_LAUNCH_KERNEL((latrd_lower_kernel_small<1024, T>),
                                             dim3(1, 1, batch_count), dim3(1024), lmemsize, stream,
-                                            nn, k - j, A, shiftA + idx2D(j, j, lda), lda, strideA,
-                                            E + j, strideE, tau + j, strideP, W,
-                                            shiftW + idx2D(j, j, ldw), ldw, strideW);
+                                            n, k, j, A, shiftA, lda, strideA, E, strideE, tau,
+                                            strideP, W, shiftW, ldw, strideW);
                     break;
                 }
 
