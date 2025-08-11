@@ -583,7 +583,10 @@ void stedc_getError(const rocblas_handle handle,
                     Uh& hInfo,
                     Uh& hInfoRes,
                     double* max_err,
-                    double* max_errv)
+                    double* max_errv,
+                    double* pDE,
+                    double* pOE,
+                    double* pAE)
 {
     constexpr bool COMPLEX = rocblas_is_complex<T>;
     using S = decltype(std::real(T{}));
@@ -662,6 +665,7 @@ void stedc_getError(const rocblas_handle handle,
         // error is ||hD - hDRes|| / ||hD||
         // using frobenius norm
         err = norm_error('F', 1, n, 1, hD[0], hDRes[0]);
+        *pDE = err;
         *max_err = err > *max_err ? err : *max_err;
 
         // check eigenvectors if required
@@ -676,12 +680,14 @@ void stedc_getError(const rocblas_handle handle,
 
             auto OE = C * adjoint(C) - HMatT::Eye(n, n);
             err = OE.max_col_norm();
+            *pOE = err;
             /* std::cout << "--- Orthogonal error: " << err << std::endl; */
             *max_errv = err > *max_err ? err : *max_err;
 
             auto AE = AorT - C * D * adjoint(C);
             /* std::cout << "--- Residual error: " << err << std::endl; */
             err = AE.norm() / AorT.norm();
+            *pAE = err;
             *max_err = err > *max_err ? err : *max_err;
 
             /* // both eigenvalues and eigenvectors needed; need to implicitly test */
@@ -806,6 +812,7 @@ void testing_stedc(Arguments& argus)
     size_t size_E = n;
     size_t size_C = ldc * n;
     double max_err = 0, max_errv = 0, gpu_time_used = 0, cpu_time_used = 0;
+    double DE = 1000, OE = 1000, AE = 1000;
 
     size_t size_DRes = (argus.unit_check || argus.norm_check) ? size_D : 0;
     size_t size_ERes = (argus.unit_check || argus.norm_check) ? size_E : 0;
@@ -875,7 +882,7 @@ void testing_stedc(Arguments& argus)
     // check computations
     if(argus.unit_check || argus.norm_check)
         stedc_getError<T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hDRes, hE, hERes, hC, hCRes,
-                          hInfo, hInfoRes, &max_err, &max_errv);
+                          hInfo, hInfoRes, &max_err, &max_errv, &DE, &OE, &AE);
 
     // collect performance data
     if(argus.timing)
@@ -904,8 +911,8 @@ void testing_stedc(Arguments& argus)
             rocsolver_bench_header("Results:");
             if(argus.norm_check)
             {
-                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "error");
-                rocsolver_bench_output(cpu_time_used, gpu_time_used, std::max(max_err, max_errv));
+                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "errorD", "errorO", "errorA");
+                rocsolver_bench_output(cpu_time_used, gpu_time_used, DE, OE, AE);
             }
             else
             {
@@ -917,7 +924,7 @@ void testing_stedc(Arguments& argus)
         else
         {
             if(argus.norm_check)
-                rocsolver_bench_output(gpu_time_used, std::max(max_err, max_errv));
+                rocsolver_bench_output(gpu_time_used, DE, OE, AE);
             else
                 rocsolver_bench_output(gpu_time_used);
         }

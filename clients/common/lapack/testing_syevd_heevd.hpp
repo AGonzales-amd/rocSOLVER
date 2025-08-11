@@ -529,7 +529,10 @@ void syevd_heevd_getError(const rocblas_handle handle,
                           Ih& hinfo,
                           Ih& hinfoRes,
                           double* max_err,
-                          double* max_errv)
+                          double* max_errv,
+                          double* pDE,
+                          double* pOE,
+                          double* pAE)
 {
     constexpr bool COMPLEX = rocblas_is_complex<T>;
     using S = decltype(std::real(T{}));
@@ -593,17 +596,20 @@ void syevd_heevd_getError(const rocblas_handle handle,
 
     for(rocblas_int b = 0; b < bc; ++b)
     {
-        if(evect != rocblas_evect_original)
+        //if(evect != rocblas_evect_original)
         {
             // only eigenvalues needed; can compare with LAPACK
 
             // error is ||hD - hDRes|| / ||hD||
             // using frobenius norm
-            if(hinfo[b][0] == 0)
+            if (hinfo[b][0] == 0) {
                 err = norm_error('F', 1, n, 1, hD[b], hDres[b]);
+                *pDE = *max_err;
+            }
             *max_err = err > *max_err ? err : *max_err;
         }
-        else
+        //else
+        if(evect == rocblas_evect_original)
         {
             // both eigenvalues and eigenvectors needed; need to implicitly test
             // eigenvectors due to non-uniqueness of eigenvectors under scaling
@@ -625,12 +631,14 @@ void syevd_heevd_getError(const rocblas_handle handle,
                 err = OE.max_col_norm();
                 /* std::cout << "--- Orthogonal error: " << err << std::endl; */
                 *max_errv = err > *max_err ? err : *max_err;
+                *pOE = err;
 
                 auto AE = M - U * D * adjoint(U);
                 err = AE.norm() / M.norm();
                 /* std::cout << "--- Residual error: " << err << std::endl; */
                 /* AE.print(); */
                 *max_err = err > *max_err ? err : *max_err;
+                *pAE = err;
 
                 /* // multiply A with each of the n eigenvectors and divide by corresponding */
                 /* // eigenvalues */
@@ -808,6 +816,7 @@ void testing_syevd_heevd(Arguments& argus)
     size_t size_Dres = (argus.unit_check || argus.norm_check) ? size_D : 0;
 
     double max_error = 0, max_ortho_error = 0, gpu_time_used = 0, cpu_time_used = 0;
+    double DE = 1000, OE = 1000, AE = 1000;
 
     // check invalid sizes
     bool invalid_size = (n < 0 || lda < n || bc < 0);
@@ -893,7 +902,7 @@ void testing_syevd_heevd(Arguments& argus)
         {
             syevd_heevd_getError<STRIDED, T>(handle, evect, uplo, n, dA, lda, stA, dD, stD, dE, stE,
                                              dinfo, bc, hA, hAres, hD, hDres, hinfo, hinfoRes,
-                                             &max_error, &max_ortho_error);
+                                             &max_error, &max_ortho_error, &DE, &OE, &AE);
         }
 
         // collect performance data
@@ -933,7 +942,7 @@ void testing_syevd_heevd(Arguments& argus)
         {
             syevd_heevd_getError<STRIDED, T>(handle, evect, uplo, n, dA, lda, stA, dD, stD, dE, stE,
                                              dinfo, bc, hA, hAres, hD, hDres, hinfo, hinfoRes,
-                                             &max_error, &max_ortho_error);
+                                             &max_error, &max_ortho_error, &DE, &OE, &AE);
         }
 
         // collect performance data
@@ -980,8 +989,8 @@ void testing_syevd_heevd(Arguments& argus)
             rocsolver_bench_header("Results:");
             if(argus.norm_check)
             {
-                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "error");
-                rocsolver_bench_output(cpu_time_used, gpu_time_used, max_error);
+                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "errorD", "errorO", "errorA");
+                rocsolver_bench_output(cpu_time_used, gpu_time_used, DE, OE, AE);
             }
             else
             {
@@ -993,7 +1002,7 @@ void testing_syevd_heevd(Arguments& argus)
         else
         {
             if(argus.norm_check)
-                rocsolver_bench_output(gpu_time_used, max_error);
+                rocsolver_bench_output(gpu_time_used, DE, OE, AE);
             else
                 rocsolver_bench_output(gpu_time_used);
         }
