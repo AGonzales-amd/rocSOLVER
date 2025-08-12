@@ -604,7 +604,7 @@ void syevd_heevd_getError(const rocblas_handle handle,
             // using frobenius norm
             if (hinfo[b][0] == 0) {
                 err = norm_error('F', 1, n, 1, hD[b], hDres[b]);
-                *pDE = *max_err;
+                *pDE = err;
             }
             *max_err = err > *max_err ? err : *max_err;
         }
