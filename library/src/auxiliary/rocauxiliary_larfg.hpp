@@ -132,6 +132,54 @@ __device__ void run_set_taubeta(T* tau, T* norms, T* alpha, S* beta)
     }
 }
 
+/*
+*   `block_reduce_larfg` is a block level LARFG function.
+*   norms_sval is lds allocated memory of size
+*   at least MAX_THDS / warpSize; on exit, the first element
+*   is overwritten with the scaling factor.
+*/
+template <int MAX_THDS, typename T, typename I, typename S>
+__device__ void block_reduce_larfg(I tid,
+                                   const I n,
+                                   T* tau,
+                                   T* alpha,
+                                   S* beta,
+                                   T* x,
+                                   T* norms_sval,
+                                   const I incX = (I)1)
+{
+    T norm2 = 0;
+    for(I i = tid; i < n; i += MAX_THDS)
+        norm2 += x[i * incX] * conj(x[i * incX]);
+
+    // reduce squared entries to find squared norm of x
+    norm2 += shift_left(norm2, 1);
+    norm2 += shift_left(norm2, 2);
+    norm2 += shift_left(norm2, 4);
+    norm2 += shift_left(norm2, 8);
+    norm2 += shift_left(norm2, 16);
+    if(warpSize > 32)
+        norm2 += shift_left(norm2, 32);
+    if(tid % warpSize == 0)
+        norms_sval[tid / warpSize] = norm2;
+    __syncthreads();
+    if(tid == 0)
+    {
+        for(I k = 1; k < MAX_THDS / warpSize; k++)
+            norm2 += norms_sval[k];
+
+        // set tau, beta, and put scaling factor into sval[0]
+        run_set_taubeta<T>(tau, &norm2, alpha, beta);
+
+        norms_sval[0] = norm2;
+    }
+
+    __syncthreads();
+    // scale x by scaling factor
+    for(I i = tid; i < n; i += MAX_THDS)
+        x[i * incX] *= norms_sval[0];
+}
+
 template <typename T, typename I, typename S, typename U>
 ROCSOLVER_KERNEL void set_taubeta(T* tauA,
                                   const rocblas_stride strideP,

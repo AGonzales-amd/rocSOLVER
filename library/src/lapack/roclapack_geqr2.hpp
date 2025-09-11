@@ -94,39 +94,12 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS) geqr2_kernel_small(const I m,
         x = a + j + j * m;
 
         // larfg
-        T norm2 = 0;
-        for(I i = tid; i < mm - 1; i += MAX_THDS)
-            norm2 += x[i + 1] * conj(x[i + 1]);
-
-        // reduce squared entries to find squared norm of x
-        norm2 += shift_left(norm2, 1);
-        norm2 += shift_left(norm2, 2);
-        norm2 += shift_left(norm2, 4);
-        norm2 += shift_left(norm2, 8);
-        norm2 += shift_left(norm2, 16);
-        if(warpSize > 32)
-            norm2 += shift_left(norm2, 32);
-        if(tid % warpSize == 0)
-            sval[tid / warpSize] = norm2;
-        __syncthreads();
+        block_reduce_larfg<MAX_THDS>(tid, mm - 1, tmptau, x, diag + j, x + 1, sval);
         if(tid == 0)
         {
-            for(I k = 1; k < MAX_THDS / warpSize; k++)
-                norm2 += sval[k];
-
-            // set tau, beta, and put scaling factor into sval[0]
-            run_set_taubeta<T>(tmptau, &norm2, x, diag + j);
-
             tau[j] = tmptau[0];
-            sval[0] = norm2;
-
             tmptau[0] = conj(tmptau[0]);
         }
-        __syncthreads();
-
-        // scale x by scaling factor
-        for(I i = tid; i < mm - 1; i += MAX_THDS)
-            x[i + 1] *= sval[0];
         __syncthreads();
 
         // ----- 2. compute w = tau'*v'*A -----

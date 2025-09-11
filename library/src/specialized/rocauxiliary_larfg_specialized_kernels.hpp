@@ -73,43 +73,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS) larfg_kernel_small(const I n,
     // shared variables
     __shared__ T sval[MAX_THDS / WarpSize];
 
-    // dot
-    T norm2 = 0;
-    for(I i = tid; i < n - 1; i += MAX_THDS)
-    {
-        T temp = x[i * incX];
-        norm2 += temp * conj(temp);
-    }
-
-    // reduce squared entries to find squared norm of x
-    norm2 += shift_left(norm2, 1);
-    norm2 += shift_left(norm2, 2);
-    norm2 += shift_left(norm2, 4);
-    norm2 += shift_left(norm2, 8);
-    norm2 += shift_left(norm2, 16);
-    if(warpSize > 32)
-        norm2 += shift_left(norm2, 32);
-    if(tid % warpSize == 0)
-        sval[tid / warpSize] = norm2;
-    __syncthreads();
-    if(tid == 0)
-    {
-        for(I k = 1; k < MAX_THDS / warpSize; k++)
-            norm2 += sval[k];
-        sval[0] = norm2;
-    }
-    __syncthreads();
-
-    // set tau, beta, and put scaling factor into sval[0]
-    if(tid == 0)
-    {
-        run_set_taubeta<T>(tau, sval, a, b);
-    }
-    __syncthreads();
-
-    // scale x by scaling factor
-    for(I i = tid; i < n - 1; i += MAX_THDS)
-        x[i * incX] *= sval[0];
+    block_reduce_larfg<MAX_THDS>(tid, n - 1, tau, a, b, x, sval, incX);
 }
 
 /*************************************************************

@@ -111,37 +111,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         __syncthreads();
 
         // larfg
-        T norm2 = 0;
-        for(I i = tid; i < nn - 1; i += MAX_THDS)
-            norm2 += x[i + 1] * conj(x[i + 1]);
-
-        // reduce squared entries to find squared norm of x
-        norm2 += shift_left(norm2, 1);
-        norm2 += shift_left(norm2, 2);
-        norm2 += shift_left(norm2, 4);
-        norm2 += shift_left(norm2, 8);
-        norm2 += shift_left(norm2, 16);
-        if(warpSize > 32)
-            norm2 += shift_left(norm2, 32);
-        if(tid % warpSize == 0)
-            sval[tid / warpSize] = norm2;
-        __syncthreads();
+        block_reduce_larfg<MAX_THDS>(tid, nn - 1, tmptau, x, E + j, x + 1, sval);
         if(tid == 0)
         {
-            for(I k = 1; k < MAX_THDS / warpSize; k++)
-                norm2 += sval[k];
-
-            // set tau, beta, and put scaling factor into sval[0]
-            run_set_taubeta<T>(tmptau, &norm2, x, E + j);
-
             tau[j] = tmptau[0];
-            sval[0] = norm2;
         }
-        __syncthreads();
-
-        // scale x by scaling factor
-        for(I i = tid; i < nn - 1; i += MAX_THDS)
-            x[i + 1] *= sval[0];
         __syncthreads();
 
         // ----- 2. compute w = tau*A*v - 1/2*tau*tau*(v'*A*v)*v -----
@@ -161,7 +135,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         __syncthreads();
 
         // dot
-        norm2 = 0;
+        T norm2 = 0;
         for(I i = tid; i < nn; i += MAX_THDS)
             norm2 += x[i] * conj(w[i]);
 
@@ -286,37 +260,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         __syncthreads();
 
         // larfg
-        T norm2 = 0;
-        for(I i = tid; i < nn - 1; i += MAX_THDS)
-            norm2 += x[i] * conj(x[i]);
-
-        // reduce squared entries to find squared norm of x
-        norm2 += shift_left(norm2, 1);
-        norm2 += shift_left(norm2, 2);
-        norm2 += shift_left(norm2, 4);
-        norm2 += shift_left(norm2, 8);
-        norm2 += shift_left(norm2, 16);
-        if(warpSize > 32)
-            norm2 += shift_left(norm2, 32);
-        if(tid % warpSize == 0)
-            sval[tid / warpSize] = norm2;
-        __syncthreads();
+        block_reduce_larfg<MAX_THDS>(tid, nn - 1, tmptau, x + (nn - 1), E + (j - 1), x, sval);
         if(tid == 0)
         {
-            for(I k = 1; k < MAX_THDS / warpSize; k++)
-                norm2 += sval[k];
-
-            // set tau, beta, and put scaling factor into sval[0]
-            run_set_taubeta<T>(tmptau, &norm2, x + (nn - 1), E + (j - 1));
-
             tau[j - 1] = tmptau[0];
-            sval[0] = norm2;
         }
-        __syncthreads();
-
-        // scale x by scaling factor
-        for(I i = tid; i < nn - 1; i += MAX_THDS)
-            x[i] *= sval[0];
         __syncthreads();
 
         // ----- 2. compute w = tau*A*v - 1/2*tau*tau*(v'*A*v*)v -----
@@ -335,7 +283,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(MAX_THDS)
         __syncthreads();
 
         // dot
-        norm2 = 0;
+        T norm2 = 0;
         for(I i = tid; i < nn; i += MAX_THDS)
             norm2 += x[i] * conj(w[i]);
 
